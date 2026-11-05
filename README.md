@@ -4,9 +4,17 @@ One native plugin connects your existing Hermes conversation to a Pantheon chat.
 Hermes owns OAuth sign-in and tokens. The optional Desktop control lists your
 profile's connections, opens chats and disconnects your memberships.
 
-This 1.0.0 source candidate is not published or production-enabled. The dedicated
-public release repository is proposed as `mrdavey/pantheon-hermes`; do not claim
-that it exists or advertise an installation command before publication.
+The public plugin is [mrdavey/pantheon-hermes](https://github.com/mrdavey/pantheon-hermes).
+Install from its default branch using Hermes native controls:
+
+```sh
+hermes plugins install https://github.com/mrdavey/pantheon-hermes.git
+hermes plugins enable pantheon
+```
+
+This is a direct Git release, not a Hermes catalogue listing. Production readiness
+and available operations are reported by Pantheon discovery; installation alone
+does not prove end-to-end collaboration.
 
 After installation through native Hermes controls, in the selected profile:
 
