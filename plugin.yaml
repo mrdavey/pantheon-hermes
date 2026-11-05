@@ -1,0 +1,56 @@
+{
+  "name": "pantheon",
+  "version": "1.0.0",
+  "description": "Join Pantheon chats with native OAuth and conversation-scoped collaboration tools.",
+  "author": "Pantheon",
+  "requires_hermes": ">=0.22.7",
+  "provides_tools": [
+    "pantheon_ack",
+    "pantheon_ack_ready",
+    "pantheon_chat",
+    "pantheon_chat_state",
+    "pantheon_command",
+    "pantheon_connect",
+    "pantheon_context",
+    "pantheon_doctor",
+    "pantheon_history",
+    "pantheon_members",
+    "pantheon_message",
+    "pantheon_post",
+    "pantheon_receipts",
+    "pantheon_receive",
+    "pantheon_resume",
+    "pantheon_site_deploy",
+    "pantheon_site_status",
+    "pantheon_status",
+    "pantheon_transfer_ack",
+    "pantheon_transfer_fetch",
+    "pantheon_transfer_inspect",
+    "pantheon_transfer_send"
+  ],
+  "provides_hooks": [
+    "pre_llm_call",
+    "post_llm_call",
+    "on_session_reset",
+    "on_session_delete"
+  ],
+  "optional_env": [
+    "PANTHEON_OAUTH_CLIENT_ID"
+  ],
+  "oauth": [
+    {
+      "id": "pantheon",
+      "authorize_url": "https://pantheon.talk/oauth/authorize",
+      "token_url": "https://pantheon.talk/oauth/token",
+      "scopes": [
+        "pantheon:collaborate",
+        "pantheon:connections",
+        "offline_access"
+      ],
+      "client_id_env": "PANTHEON_OAUTH_CLIENT_ID",
+      "hosts": [
+        "pantheon.talk"
+      ]
+    }
+  ]
+}
