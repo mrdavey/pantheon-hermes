@@ -38,6 +38,7 @@ export function PantheonControl({ ctx }) {
   const refresh = useRef(() => {})
   const authGeneration = useRef(0)
   const authBusy = useRef(false)
+  const revokedScope = useRef(null)
   const heading = useId()
   const view = loaded?.scope === scope ? loaded.value : null
   const alive = () => current.current === scope && host.state.profile.get() === profile && gatewayActivationEpoch() === epoch
@@ -56,6 +57,7 @@ export function PantheonControl({ ctx }) {
         if (!next) throw new Error('invalid snapshot')
         if (!retired && alive() && authGeneration.current === authScope) {
           setLoaded({ scope, value: next }); setPhase('ready'); failures = 0
+          revokedScope.current = null
           // Reconcile only original-scope attempts and original operation IDs.
           for (const [key, attempt] of attempts.current) {
             if (retired || !alive() || authGeneration.current !== authScope) break
@@ -72,7 +74,7 @@ export function PantheonControl({ ctx }) {
       } catch {
         if (!retired && alive() && authGeneration.current === authScope) {
           setLoaded(null)
-          setPhase('unavailable'); failures++
+          setPhase(revokedScope.current === scope ? 'revoked' : 'unavailable'); failures++
         }
       } finally {
         busy = false
@@ -109,7 +111,7 @@ export function PantheonControl({ ctx }) {
     try {
       await ctx.rest('/authorization/revoke', { method: 'POST', timeoutMs: 30000,
         body: { grant: view.grant, operation: crypto.randomUUID().replaceAll('-', '') } })
-      if (alive()) { setLoaded(null); setPhase('revoked') }
+      if (alive()) { revokedScope.current = scope; setLoaded(null); setPhase('revoked') }
     } catch { if (alive()) { setLoaded(null); setPhase('unavailable') } }
     finally { if (alive()) { ++authGeneration.current; authBusy.current = false } }
   }
@@ -138,8 +140,8 @@ export function PantheonControl({ ctx }) {
       }) : h('p', { role: 'status' }, label),
       phase === 'unavailable' && h('p', null, 'Sign in in this profile: ', h('code', null, 'hermes auth add pantheon:pantheon')),
       h('details', { style: { marginTop: 16 } }, h('summary', { style: { minHeight: 32 } }, 'Diagnostics'),
-        h('p', null, 'Pantheon 1.0.2 · ', phase),
-        h(Button, { type: 'button', variant: 'outline', style: { minHeight: 44 }, onClick: () => void ctx.os.writeClipboard('Pantheon 1.0.2 · ' + phase) }, 'Copy diagnostics'),
+        h('p', null, 'Pantheon 1.0.3 · ', phase),
+        h(Button, { type: 'button', variant: 'outline', style: { minHeight: 44 }, onClick: () => void ctx.os.writeClipboard('Pantheon 1.0.3 · ' + phase) }, 'Copy diagnostics'),
         view && h(Button, { type: 'button', variant: 'outline', disabled: phase === 'revoking', style: { minHeight: 44 }, onClick: () => void revoke() }, 'Revoke authorization')),
       h(Button, { type: 'button', variant: 'ghost', style: { minHeight: 44, marginTop: 8 }, onClick: () => host.navigate('/capabilities?tab=plugins') }, 'Plugin settings')))
 }

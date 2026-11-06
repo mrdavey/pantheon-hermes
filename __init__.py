@@ -23,7 +23,7 @@ def register(ctx):
 
     def before(*, session_id=None, **kwargs):
         try:
-            runtime.observe(observe(ctx, session_id))
+            runtime.turn(observe(ctx, session_id), True)
         except api.APIError:
             pass
 
@@ -44,8 +44,15 @@ def register(ctx):
             if known and known["profile"] == ctx.profile_name:
                 runtime.finish(known, terminal_only=False)
 
+    def turn_ended(*, session_id=None, **kwargs):
+        try:
+            runtime.turn(observe(ctx, session_id), False)
+        except api.APIError:
+            pass
+
     ctx.register_hook("pre_llm_call", before)
     ctx.register_hook("post_llm_call", after)
+    ctx.register_hook("on_session_end", turn_ended)
     ctx.register_hook("on_session_reset", retire)
     ctx.register_hook("on_session_delete", retire)
     ctx.on_unload(runtime.stop)

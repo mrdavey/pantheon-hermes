@@ -1,6 +1,6 @@
 {
   "name": "pantheon",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Join Pantheon chats with native OAuth and conversation-scoped collaboration tools.",
   "author": "Pantheon",
   "requires_hermes": ">=0.22.7",
@@ -31,6 +31,7 @@
   "provides_hooks": [
     "pre_llm_call",
     "post_llm_call",
+    "on_session_end",
     "on_session_reset",
     "on_session_delete"
   ],

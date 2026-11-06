@@ -106,7 +106,7 @@ class Tools:
             return {"ok": True, "signed_in": True, "incoming": permissions.current() is True,
                     "connections": sum(row["grant"] == grant and row["session"] == session and row["state"] != "disconnected" for row in local),
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
-                    "version": "1.0.2"}
+                    "version": "1.0.3"}
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
@@ -166,7 +166,8 @@ class Tools:
             # Human-facing keys may be short; management receipt IDs are fixed opaque handles.
             state.cleanup_intent(connection, state.digest([connection, values["key"]]))
             self.runtime.disconnect(state.get("connection", connection))
-            return {"state": state.get("connection", connection)["state"]}
+            return {"state": state.get("connection", connection)["state"], "chat_url": row["url"],
+                    "instruction": "Report the observed outcome and copy chat_url exactly. The plugin restores the prior incoming-replies setting after the last connection; do not change it yourself."}
         if name == "pantheon_site_deploy":
             values = {"connection": connection, "key": args["key"], "files": files.bundle(args["directory"])}
         elif name == "pantheon_transfer_send":

@@ -250,7 +250,7 @@ class NativeTests(unittest.TestCase):
         state.put('permission','prior',{'value':None})
         removed=[]
         config=types.SimpleNamespace(unset_config_value=lambda key:removed.append(key),set_config_value=lambda key,value:removed.append((key,value)))
-        with patch.dict(sys.modules,{'hermes_cli':types.ModuleType('hermes_cli'),'hermes_cli.config':config}),patch.object(permissions,'current',return_value=True),patch.object(api,'tool',side_effect=api.APIError('sign_in_required')):
+        with patch.dict(sys.modules,{'hermes_cli':types.ModuleType('hermes_cli'),'hermes_cli.config':config}),patch.object(permissions,'current',return_value=True),patch.object(api,'tool',side_effect=api.APIError('sign_in_required')),patch.object(api,'request',side_effect=api.APIError('sign_in_required')):
             self.runtime.run(row,threading.Event())
         self.assertEqual(state.get('connection',row['id'])['state'],'authorization_unavailable')
         self.assertEqual(removed,[permissions.KEY])
@@ -259,6 +259,46 @@ class NativeTests(unittest.TestCase):
         self.row()
         permissions.restore()
         self.assertIsNotNone(state.get('permission','prior'))
+
+    def test_desktop_disconnect_stops_receiver_and_restores_permission(self):
+        row=self.row()
+        with patch.object(permissions,'current',return_value=True),patch.object(permissions,'restore') as restore,patch.object(api,'tool',side_effect=api.APIError('sign_in_required')),patch.object(api,'request',return_value={'state':'disconnected'}) as request:
+            self.runtime.run(row,threading.Event())
+        self.assertEqual(state.get('connection',CONNECTION)['state'],'disconnected')
+        request.assert_called_once_with('GET','/connections/'+CONNECTION)
+        restore.assert_called_once()
+        self.assertEqual(self.ctx.injected,[])
+
+    def test_authorization_loss_does_not_restart_on_next_turn(self):
+        row=self.row(state='authorization_unavailable')
+        with patch.object(threading.Thread,'start') as start:
+            self.runtime.observe(SESSION)
+            self.runtime.start(row)
+        start.assert_not_called()
+
+    def test_receiver_waits_for_native_turn_end_before_reading_or_injecting(self):
+        row=self.row()
+        with patch.object(self.runtime,'observe'):
+            self.runtime.turn(SESSION,True)
+        stop=threading.Event()
+        def end_turn(_):
+            with patch.object(self.runtime,'observe'):
+                self.runtime.turn(SESSION,False)
+        def receive(*args):
+            stop.set()
+            return []
+        with patch.object(stop,'wait',side_effect=end_turn),patch.object(permissions,'current',return_value=True),patch.object(api,'tool',side_effect=receive) as tool:
+            self.runtime.run(row,stop)
+        tool.assert_called_once()
+        self.assertEqual(self.ctx.injected,[])
+
+    def test_withdraw_returns_exact_url_and_plugin_owned_restoration(self):
+        row=self.row()
+        with patch.object(api,'request',side_effect=[{'grant_id':GRANT},{'state':'disconnected'}]),patch.object(api,'tool',return_value={'epoch':1,'config':1}),patch.object(permissions,'restore'):
+            result=self.tools.dispatch('pantheon_command',{'connection':CONNECTION,'op':'withdraw','key':'cleanup'},SESSION)
+        self.assertEqual(result['state'],'disconnected')
+        self.assertEqual(result['chat_url'],row['url'])
+        self.assertIn('do not change it yourself',result['instruction'])
 
     def test_durable_ack_flushes_file_and_directory(self):
         target=Path(self.temp.name)/'receipt.txt';target.write_bytes(b'received')

@@ -53,6 +53,11 @@ digests and wake dispositions. It contains no invitations, OAuth tokens, payload
 URLs or transcripts. Session APIs read routing metadata only, not messages.
 Explicit file tools read or save the paths you request; they never execute files.
 Incoming delivery uses bounded, content-free native notices and explicit read ACKs.
+Receivers wait for the native turn to finish before checking for an idle wake.
+Desktop disconnect is reconciled through the public connection endpoint; revoked
+or unavailable authorization stops receivers without background sign-in. After
+the last connection stops, the plugin restores the exact prior incoming-replies
+setting. The agent must not overwrite that restoration.
 Registration makes no network requests, starts no workers and writes no storage.
 
 The source uses Python's standard library and official Hermes APIs. The dashboard

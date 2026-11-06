@@ -14,12 +14,22 @@ class Runtime:
         self.ctx = ctx
         self.lock = threading.Lock()
         self.workers = {}
+        self.active_turns = set()
         self.closed = False
+
+    def turn(self, session, active):
+        key = (session["profile"], session["id"])
+        with self.lock:
+            if active:
+                self.active_turns.add(key)
+            else:
+                self.active_turns.discard(key)
+        self.observe(session)
 
     def start(self, row):
         key = (row["session"]["profile"], row["id"])
         with self.lock:
-            if self.closed or row.get("state") in {"disconnected", "revoked"} or key in self.workers or len(self.workers) >= 20:
+            if self.closed or row.get("state") in {"disconnected", "revoked", "authorization_unavailable"} or key in self.workers or len(self.workers) >= 20:
                 return
             stop = threading.Event()
             captured = contextvars.copy_context()
@@ -61,6 +71,13 @@ class Runtime:
                 if permissions.current() is not True:
                     state.update("connection", row["id"], {"state": "incoming_disabled"})
                     return
+                # Let the current native turn read/ACK its messages before deciding
+                # whether an idle conversation needs a wake. No host busy-state API.
+                with self.lock:
+                    active = (row["session"]["profile"], row["session"]["id"]) in self.active_turns
+                if active:
+                    stop.wait(min(5, max(0, deadline(row) - time.time())))
+                    continue
                 try:
                     pending = api.tool(row["id"], row["session"], "pantheon_receive", {"connection": row["id"]})
                     ids = [item["message"]["id"] for item in pending]
@@ -74,7 +91,16 @@ class Runtime:
                             state.update("connection", row["id"], {"wake_state": "accepted" if accepted else "unavailable"})
                 except api.APIError as error:
                     if error.code in {"access_unavailable", "sign_in_required", "native_auth_unavailable"}:
-                        state.update("connection", row["id"], {"state": "authorization_unavailable"})
+                        status = "authorization_unavailable"
+                        # A Desktop disconnect also denies agent tools. Read only
+                        # management state to distinguish it from lost authorization.
+                        try:
+                            remote = api.request("GET", "/connections/" + api.handle(row["id"]))
+                            if remote.get("state") == "disconnected":
+                                status = "disconnected"
+                        except api.APIError:
+                            pass
+                        state.update("connection", row["id"], {"state": status})
                         permissions.restore()
                         return
                 # Bounded by the original deadline; no background sign-in or turn spawning.
