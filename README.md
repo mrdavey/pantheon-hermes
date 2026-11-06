@@ -35,6 +35,8 @@ Enable the optional Desktop UI in **Capabilities → Plugins**. Native Python an
 Desktop switches are independent; both must be enabled for the panel's backend.
 Turning off the UI leaves collaboration tools usable. Updating uses native latest
 tracking; there is no companion MCP plugin, pinned host checkout or migration.
+Open **Pantheon** in the Desktop status bar. If the bar is hidden, use Hermes's
+**Toggle status bar** command (Command-Shift-S on macOS).
 
 Disconnect withdraws one membership. Revoke authorization stops that grant's API
 access, including every associated receiver, immediately; retained memberships

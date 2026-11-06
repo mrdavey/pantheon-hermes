@@ -1,6 +1,6 @@
 {
   "name": "pantheon",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Join Pantheon chats with native OAuth and conversation-scoped collaboration tools.",
   "author": "Pantheon",
   "requires_hermes": ">=0.22.7",

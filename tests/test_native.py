@@ -32,7 +32,9 @@ GRANT = 'grant_01234567890123456'
 class Context:
     @property
     def profile_name(self): return PROFILE.get()
-    def __init__(self): self.tools={};self.hooks={};self.unload=[];self.injected=[]
+    def __init__(self): self.tools={};self.hooks={};self.skills={};self.unload=[];self.injected=[]
+    def session_surface(self): return 'desktop'
+    def register_skill(self, **kwargs): self.skills[kwargs['name']]=kwargs
     def register_tool(self, **kwargs): self.tools[kwargs['name']]=kwargs
     def register_hook(self, name, handler): self.hooks[name]=handler
     def on_unload(self, handler): self.unload.append(handler)
@@ -62,6 +64,9 @@ class NativeTests(unittest.TestCase):
         manifest=json.loads((Path(__file__).parents[1]/'plugin.yaml').read_text())
         self.assertEqual(set(manifest['provides_tools']),set(self.ctx.tools))
         self.assertEqual(set(manifest['provides_hooks']),set(self.ctx.hooks))
+        self.assertEqual(set(self.ctx.skills), {'collaborate'})
+        self.assertEqual(self.ctx.skills['collaborate']['path'].read_text(),
+                         (Path(__file__).parents[1]/'skills/collaborate/SKILL.md').read_text())
         for item in self.ctx.tools.values():
             self.assertFalse({'session','profile','token','authorization'} & set(item['schema']['parameters']['properties']))
     def test_invitation_rejects_untrusted_routes(self):
@@ -159,6 +164,61 @@ class NativeTests(unittest.TestCase):
         with patch.dict(sys.modules,{'gateway':types.ModuleType('gateway'),'gateway.session_context':types.SimpleNamespace(get_session_env=lambda name:'s'),'hermes_state':types.SimpleNamespace(SessionDB=DB)}):
             with self.assertRaises(api.APIError):observe(self.ctx,'child')
         self.assertEqual(calls,['close'])
+    def test_desktop_storage_normalization_preserves_connection_binding(self):
+        row = {'source': 'gui', 'hidden': 0, 'archived': 0}
+        class DB:
+            def __init__(self, read_only): assert read_only
+            def get_session_list_row(self, session): return dict(row)
+            def get_conversation_root(self, session): return 'conversation-root'
+            def close(self): pass
+        modules = {'gateway': types.ModuleType('gateway'),
+                   'gateway.session_context': types.SimpleNamespace(get_session_env=lambda name: 'native-route'),
+                   'hermes_state': types.SimpleNamespace(SessionDB=DB)}
+        with patch.dict(sys.modules, modules):
+            initial = observe(self.ctx, 'native-session')
+            row['source'] = 'local'
+            self.assertEqual(observe(self.ctx, 'native-session'), initial)
+        self.assertEqual(initial, {'id': 'conversation-root', 'route': 'native-route',
+                                   'profile': 'default', 'surface': 'desktop'})
+    def test_local_storage_does_not_admit_unsupported_or_hidden_sessions(self):
+        row = {'source': 'local', 'hidden': 0, 'archived': 0}
+        class DB:
+            def __init__(self, read_only): assert read_only
+            def get_session_list_row(self, session): return dict(row)
+            def get_conversation_root(self, session): raise AssertionError('lineage before admission')
+            def close(self): pass
+        modules = {'gateway': types.ModuleType('gateway'),
+                   'gateway.session_context': types.SimpleNamespace(get_session_env=lambda name: 'native-route'),
+                   'hermes_state': types.SimpleNamespace(SessionDB=DB)}
+        with patch.dict(sys.modules, modules):
+            for surface in ('acp', 'telegram', '', 'unknown'):
+                with self.subTest(surface=surface), patch.object(self.ctx, 'session_surface', return_value=surface):
+                    with self.assertRaises(api.APIError): observe(self.ctx, 'native-session')
+            for source in ('subagent', 'tool', 'oneshot', 'cron', 'bot_room'):
+                row['source'] = source
+                with self.subTest(source=source), self.assertRaises(api.APIError): observe(self.ctx, 'native-session')
+            row['source'] = 'gui'
+            for flag in ('hidden', 'archived'):
+                row[flag] = 1
+                with self.subTest(flag=flag), self.assertRaises(api.APIError): observe(self.ctx, 'native-session')
+                row[flag] = 0
+    def test_real_host_desktop_metadata_when_available(self):
+        try:
+            from hermes_state import SessionDB
+            from gateway.session_context import scoped_session_key
+        except ImportError:
+            self.skipTest('real Hermes host supplied by the isolated contract runner')
+        # The contract runner supplies a disposable profile. Never use owner state.
+        import os
+        with patch.dict(os.environ, {'HERMES_HOME': self.temp.name}):
+            db = SessionDB()
+            try: db.create_session('native-desktop-fixture', source='gui')
+            finally: db.close()
+            with scoped_session_key('native-desktop-route'):
+                result = observe(self.ctx, 'native-desktop-fixture')
+        self.assertEqual(result['surface'], 'desktop')
+        self.assertEqual(result['id'], 'native-desktop-fixture')
+        self.assertEqual(result['route'], 'native-desktop-route')
     def test_download_integrity_no_overwrite_and_explicit_receipt(self):
         import base64,hashlib
         target=Path(self.temp.name)/'saved.txt';data=b'complete payload'

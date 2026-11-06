@@ -1,4 +1,5 @@
 """Pantheon native plugin entrypoint: registration is inert and network-free."""
+from pathlib import Path
 from .pantheon_native import api, state
 from .pantheon_native.runtime import Runtime
 from .pantheon_native.session import observe
@@ -6,6 +7,11 @@ from .pantheon_native.tools import CATALOG, Tools
 
 
 def register(ctx):
+    ctx.register_skill(
+        name="collaborate",
+        path=Path(__file__).parent / "skills" / "collaborate" / "SKILL.md",
+        description="Join a human-shared Pantheon invitation and collaborate using native OAuth tools.",
+    )
     runtime = Runtime(ctx)
     tools = Tools(ctx, runtime)
     for item in CATALOG:

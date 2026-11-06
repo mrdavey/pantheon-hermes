@@ -13,7 +13,12 @@ def observe(ctx, session_id=None):
     try:
         row = db.get_session_list_row(session_id)
         # Check source BEFORE following lineage: delegates share a conversation root.
-        if not row or row.get("source") not in {"cli", "tui", "desktop", "local"} or row.get("hidden") or row.get("archived"):
+        # Hermes stores Desktop creation as `gui`, then may normalize it to
+        # `local`. Neither storage label is the current client surface.
+        if not row or row.get("source") not in {"cli", "tui", "gui", "desktop", "local"} or row.get("hidden") or row.get("archived"):
+            raise APIError("representative_session_required")
+        surface = ctx.session_surface()
+        if surface not in {"cli", "tui", "desktop"}:
             raise APIError("representative_session_required")
         root = db.get_conversation_root(session_id)
     finally:
@@ -23,4 +28,4 @@ def observe(ctx, session_id=None):
     if not all(isinstance(v, str) and v and len(v) <= 200 and not any(c in v for c in "\x00\r\n") for v in (root, route, profile)):
         raise APIError("native_session_required")
     state.put("session", session_id, {"id": root, "profile": profile})
-    return {"id": root, "route": route, "profile": profile, "surface": row["source"]}
+    return {"id": root, "route": route, "profile": profile, "surface": surface}
