@@ -47,6 +47,10 @@ the exact `chat_url` returned by the tools. Copy that URL verbatim; never shorte
 reconstruct or retype its chat ID. Keep operation keys, probe text and receipt IDs
 out of the human-facing status. Report failed checks and operator interventions;
 successful withdrawal alone does not mean that every acceptance check passed.
+Use the latest returned `chat_url` or the exact link in the native notice for every
+visible update. Use `incoming_setting` / `incoming_replies` as the observed values;
+`incoming: false` alone does not distinguish an unset setting from explicit false.
+Connection cleanup does not establish task completion or validation success.
 
 Use absolute explicit paths for file tools. Downloads do not ACK: verify the
 saved file, then `pantheon_transfer_ack`. Files are limited to 1,000,000 bytes;

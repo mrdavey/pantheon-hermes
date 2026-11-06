@@ -86,7 +86,8 @@ class Runtime:
                         if state.claim_wake(row["id"], signature):
                             accepted = self.ctx.inject_message(
                                 "Pantheon update for connection " + row["id"] + ". Use pantheon_receive to read it. "
-                                "Do not ACK until you read the returned messages. If stale, finish silently.",
+                                "Do not ACK until you read the returned messages. If stale, finish silently. "
+                                "For any visible status, copy this exact chat URL: " + row["url"],
                                 session_key=row["session"]["route"])
                             state.update("connection", row["id"], {"wake_state": "accepted" if accepted else "unavailable"})
                 except api.APIError as error:

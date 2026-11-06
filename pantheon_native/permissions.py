@@ -4,6 +4,10 @@ from . import state
 KEY = "plugins.entries.pantheon.allow_gateway_injection"
 
 
+def setting(value):
+    return "unset" if value is None else "true" if value is True else "false" if value is False else "invalid"
+
+
 def current():
     from hermes_cli.config import load_config_readonly
     return load_config_readonly().get("plugins", {}).get("entries", {}).get("pantheon", {}).get("allow_gateway_injection")

@@ -11,6 +11,13 @@ from .session import observe
 CATALOG = json.loads((Path(__file__).parent / "catalog.json").read_text())["tools"]
 PRESENTATION = json.loads((Path(__file__).parent / "presentation.json").read_text())
 SCHEMAS = {item["name"]: item for item in CATALOG}
+FINAL_INSTRUCTION = (
+    "Start the final response with the observed chat/connection outcome, then the three-line banner and "
+    "the exact clickable chat_url below it. Copy chat_url verbatim, including its origin and full ID. "
+    "Describe only verified chat and cleanup facts; connection cleanup does not establish task completion or validation success. "
+    "Use returned incoming_replies values when present; do not infer prior settings from earlier conversation turns. "
+    "The plugin manages restoration after the last connection; do not change it yourself or add a config check just to compose the response."
+)
 
 
 def validate(name, args):
@@ -103,10 +110,12 @@ class Tools:
         if name == "pantheon_doctor":
             grant = identity()
             local = state.rows("connection")
-            return {"ok": True, "signed_in": True, "incoming": permissions.current() is True,
+            incoming = permissions.current()
+            return {"ok": True, "signed_in": True, "incoming": incoming is True,
+                    "incoming_setting": permissions.setting(incoming),
                     "connections": sum(row["grant"] == grant and row["session"] == session and row["state"] != "disconnected" for row in local),
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
-                    "version": "1.0.3"}
+                    "version": "1.0.4"}
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
@@ -165,9 +174,13 @@ class Tools:
         if name == "pantheon_command" and values["op"] == "withdraw":
             # Human-facing keys may be short; management receipt IDs are fixed opaque handles.
             state.cleanup_intent(connection, state.digest([connection, values["key"]]))
+            prior = state.get("permission", "prior")
             self.runtime.disconnect(state.get("connection", connection))
+            incoming = {"current": permissions.setting(permissions.current())}
+            if prior is not None:
+                incoming["captured_prior"] = permissions.setting(prior["value"])
             return {"state": state.get("connection", connection)["state"], "chat_url": row["url"],
-                    "instruction": "Report the observed outcome and copy chat_url exactly. The plugin restores the prior incoming-replies setting after the last connection; do not change it yourself."}
+                    "incoming_replies": incoming, "banner": PRESENTATION["banner"], "instruction": FINAL_INSTRUCTION}
         if name == "pantheon_site_deploy":
             values = {"connection": connection, "key": args["key"], "files": files.bundle(args["directory"])}
         elif name == "pantheon_transfer_send":
@@ -189,6 +202,11 @@ class Tools:
         if terminal:
             outcome = api.tool(connection, session, "pantheon_chat", {"connection": connection})
             state.update("connection", connection, {"terminal_seen": True})
-            return {"result": result, "outcome": outcome, "chat_url": row["url"], "banner": PRESENTATION["banner"], "instruction": PRESENTATION["completion_instruction"]}
+            return {"result": result, "outcome": outcome, "chat_url": row["url"], "banner": PRESENTATION["banner"],
+                    "instruction": PRESENTATION["completion_instruction"] + " " + FINAL_INSTRUCTION}
         self.runtime.start(row)
+        if isinstance(result, dict):
+            # Keep the verified URL beside the latest read/write receipt, so a
+            # model need not reconstruct it from an older conversation turn.
+            result = {**result, "chat_url": row["url"]}
         return result

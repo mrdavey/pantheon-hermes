@@ -57,7 +57,9 @@ Receivers wait for the native turn to finish before checking for an idle wake.
 Desktop disconnect is reconciled through the public connection endpoint; revoked
 or unavailable authorization stops receivers without background sign-in. After
 the last connection stops, the plugin restores the exact prior incoming-replies
-setting. The agent must not overwrite that restoration.
+setting. Doctor reports unset, false and true distinctly; withdrawal reports the
+observed setting. Native replies carry the bound chat URL for faithful visible
+links. The agent must not overwrite restoration or infer task success from cleanup.
 Registration makes no network requests, starts no workers and writes no storage.
 
 The source uses Python's standard library and official Hermes APIs. The dashboard

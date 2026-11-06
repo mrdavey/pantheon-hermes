@@ -143,6 +143,7 @@ class NativeTests(unittest.TestCase):
                 while not self.ctx.injected and time.monotonic()<limit:time.sleep(.01)
                 self.runtime.stop()
             self.assertEqual(self.ctx.injected[0][0],'named')
+            self.assertIn(row['url'],self.ctx.injected[0][1])
             self.assertNotIn('peer content',self.ctx.injected[0][1])
         finally:PROFILE.reset(token)
     def test_cleanup_reuses_operation_after_network_loss(self):
@@ -294,11 +295,35 @@ class NativeTests(unittest.TestCase):
 
     def test_withdraw_returns_exact_url_and_plugin_owned_restoration(self):
         row=self.row()
-        with patch.object(api,'request',side_effect=[{'grant_id':GRANT},{'state':'disconnected'}]),patch.object(api,'tool',return_value={'epoch':1,'config':1}),patch.object(permissions,'restore'):
+        state.put('permission','prior',{'value':None})
+        with patch.object(api,'request',side_effect=[{'grant_id':GRANT},{'state':'disconnected'}]),patch.object(api,'tool',return_value={'epoch':1,'config':1}),patch.object(permissions,'restore'),patch.object(permissions,'current',return_value=None):
             result=self.tools.dispatch('pantheon_command',{'connection':CONNECTION,'op':'withdraw','key':'cleanup'},SESSION)
         self.assertEqual(result['state'],'disconnected')
         self.assertEqual(result['chat_url'],row['url'])
         self.assertIn('do not change it yourself',result['instruction'])
+        self.assertEqual(result['incoming_replies'],{'current':'unset','captured_prior':'unset'})
+        self.assertTrue(result['instruction'].startswith('Start the final response with the observed'))
+        self.assertEqual(len(result['banner'].splitlines()),3)
+
+    def test_read_and_write_receipts_keep_exact_bound_url(self):
+        row=self.row()
+        for name,args in [
+            ('pantheon_context',{}),
+            ('pantheon_post',{'key':'post-marker','text':'Synthetic marker'}),
+            ('pantheon_ack',{'key':'ack-marker','message_ids':['message']}),
+        ]:
+            with self.subTest(name=name),patch.object(api,'request',return_value={'grant_id':GRANT}),patch.object(api,'tool',return_value={'id':'receipt','epoch':1,'config':1}) as remote,patch.object(self.runtime,'start'):
+                result=self.tools.dispatch(name,{'connection':CONNECTION,**args},SESSION)
+            self.assertEqual(result['chat_url'],row['url'])
+            self.assertEqual(result['id'],'receipt')
+            self.assertEqual(remote.call_count,1 if name=='pantheon_context' else 2)
+
+    def test_incoming_setting_preserves_unset_false_and_true(self):
+        for value,expected in [(None,'unset'),(False,'false'),(True,'true')]:
+            with self.subTest(value=value),patch.object(api,'request',return_value={'grant_id':GRANT}),patch.object(permissions,'current',return_value=value):
+                result=self.tools.dispatch('pantheon_doctor',{},SESSION)
+            self.assertEqual(result['incoming_setting'],expected)
+            self.assertEqual(result['incoming'],value is True)
 
     def test_durable_ack_flushes_file_and_directory(self):
         target=Path(self.temp.name)/'receipt.txt';target.write_bytes(b'received')
