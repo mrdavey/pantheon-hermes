@@ -1,5 +1,5 @@
 // Native unified package: plain ESM, SDK + React only, no Electron or raw HTTP.
-import { host, useValue, gatewayActivationEpoch, useGatewayActivationEpoch, Button, Popover, PopoverContent, PopoverTrigger } from '@hermes/plugin-sdk'
+import { useQuery, host, useValue, gatewayActivationEpoch, useGatewayActivationEpoch, Button, Popover, PopoverContent, PopoverTrigger } from '@hermes/plugin-sdk'
 import { createElement as h, useEffect, useId, useRef, useState } from 'react'
 
 const HANDLE = /^[A-Za-z0-9_-]{16,80}$/
@@ -44,51 +44,62 @@ export function PantheonControl({ ctx }) {
   const alive = () => current.current === scope && host.state.profile.get() === profile && gatewayActivationEpoch() === epoch
   void revision
 
+  const [foreground, setForeground] = useState(() => !document.hidden && navigator.onLine)
   useEffect(() => {
-    let retired = false, busy = false, timer, failures = 0
+    const visibility = () => {
+      const active = !document.hidden && navigator.onLine
+      setForeground(active)
+      if (active && !authBusy.current) void refresh.current()
+    }
+    document.addEventListener('visibilitychange', visibility)
+    window.addEventListener('online', visibility); window.addEventListener('offline', visibility)
+    return () => { document.removeEventListener('visibilitychange', visibility)
+      window.removeEventListener('online', visibility); window.removeEventListener('offline', visibility) }
+  }, [])
+  useEffect(() => {
     authBusy.current = false; setLoaded(null); setPhase('loading')
-    async function load() {
-      clearTimeout(timer)
-      if (retired || busy || authBusy.current || document.hidden || !navigator.onLine || gateway !== 'open' || !alive()) return
-      busy = true
+  }, [scope])
+  const query = useQuery({
+    queryKey: ['pantheon', 'connections', profile, epoch],
+    enabled: foreground && gateway === 'open' && phase !== 'revoking',
+    retry: false, gcTime: 0, staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: q => Math.min(30000, 5000 * 2 ** q.state.fetchFailureCount),
+    refetchIntervalInBackground: false,
+    queryFn: async ({ signal }) => {
+      if (!alive() || authBusy.current) return null
       const authScope = authGeneration.current
       try {
         const next = snapshot(await ctx.rest('/connections', { timeoutMs: 30000 }))
         if (!next) throw new Error('invalid snapshot')
-        if (!retired && alive() && authGeneration.current === authScope) {
-          setLoaded({ scope, value: next }); setPhase('ready'); failures = 0
+        if ((!signal.aborted && alive()) && authGeneration.current === authScope) {
+          setLoaded({ scope, value: next }); setPhase('ready')
           revokedScope.current = null
           // Reconcile only original-scope attempts and original operation IDs.
           for (const [key, attempt] of attempts.current) {
-            if (retired || !alive() || authGeneration.current !== authScope) break
+            if ((signal.aborted || !alive()) || authGeneration.current !== authScope) break
             if (attempt.scope !== scope || attempt.grant !== next.grant || attempt.state !== 'uncertain') continue
             try {
               const receipt = await ctx.rest('/operations/' + attempt.operation + '?expected_grant=' + attempt.grant, { timeoutMs: 30000 })
               if (receipt?.grant === attempt.grant && receipt.connection?.id === attempt.id && receipt.connection?.state === 'disconnected') {
                 attempts.current.set(key, { ...attempt, state: 'disconnected' })
-                if (alive()) redraw(n => n + 1)
+                if (!signal.aborted && alive()) redraw(n => n + 1)
               }
             } catch { /* Unknown stays unknown; no automatic mutation replay. */ }
           }
+          return next
         }
-      } catch {
-        if (!retired && alive() && authGeneration.current === authScope) {
+      } catch (error) {
+        if ((!signal.aborted && alive()) && authGeneration.current === authScope) {
           setLoaded(null)
-          setPhase(revokedScope.current === scope ? 'revoked' : 'unavailable'); failures++
+          setPhase(revokedScope.current === scope ? 'revoked' : 'unavailable')
         }
-      } finally {
-        busy = false
-        if (!retired && alive()) timer = setTimeout(load, Math.min(30000, 5000 * 2 ** failures))
+        throw error
       }
-    }
-    refresh.current = load
-    const visibility = () => { if (document.hidden || !navigator.onLine) clearTimeout(timer); else void load() }
-    document.addEventListener('visibilitychange', visibility)
-    window.addEventListener('online', visibility); window.addEventListener('offline', visibility)
-    void load()
-    return () => { retired = true; clearTimeout(timer); document.removeEventListener('visibilitychange', visibility)
-      window.removeEventListener('online', visibility); window.removeEventListener('offline', visibility) }
-  }, [ctx, scope, gateway])
+      return null
+    },
+  })
+  refresh.current = () => query.refetch({ cancelRefetch: false })
 
   async function disconnect(row) {
     if (!view || !alive()) return
@@ -140,8 +151,8 @@ export function PantheonControl({ ctx }) {
       }) : h('p', { role: 'status' }, label),
       phase === 'unavailable' && h('p', null, 'Sign in in this profile: ', h('code', null, 'hermes auth add pantheon:pantheon')),
       h('details', { style: { marginTop: 16 } }, h('summary', { style: { minHeight: 32 } }, 'Diagnostics'),
-        h('p', null, 'Pantheon 1.0.4 · ', phase),
-        h(Button, { type: 'button', variant: 'outline', style: { minHeight: 44 }, onClick: () => void ctx.os.writeClipboard('Pantheon 1.0.4 · ' + phase) }, 'Copy diagnostics'),
+        h('p', null, 'Pantheon 1.0.5 · ', phase),
+        h(Button, { type: 'button', variant: 'outline', style: { minHeight: 44 }, onClick: () => void ctx.os.writeClipboard('Pantheon 1.0.5 · ' + phase) }, 'Copy diagnostics'),
         view && h(Button, { type: 'button', variant: 'outline', disabled: phase === 'revoking', style: { minHeight: 44 }, onClick: () => void revoke() }, 'Revoke authorization')),
       h(Button, { type: 'button', variant: 'ghost', style: { minHeight: 44, marginTop: 8 }, onClick: () => host.navigate('/capabilities?tab=plugins') }, 'Plugin settings')))
 }

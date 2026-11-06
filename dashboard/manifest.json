@@ -1,6 +1,6 @@
 {
   "name": "pantheon",
   "label": "Pantheon",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "api": "plugin_api.py"
 }

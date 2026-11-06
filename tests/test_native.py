@@ -10,6 +10,9 @@ import threading
 import time
 import types
 import unittest
+from ruamel.yaml import YAML
+yaml = YAML(typ="safe")
+yaml.default_flow_style = False
 from unittest.mock import patch
 
 # Exported root names are chosen by the native installer, not by this suite.
@@ -61,7 +64,7 @@ class NativeTests(unittest.TestCase):
     def test_registration_inert_and_exact(self):
         with patch.object(state,'database',side_effect=AssertionError('storage at registration')),patch.object(api,'request',side_effect=AssertionError('network at registration')),patch.object(threading.Thread,'start',side_effect=AssertionError('thread at registration')):
             register(self.ctx)
-        manifest=json.loads((Path(__file__).parents[1]/'plugin.yaml').read_text())
+        manifest=yaml.load((Path(__file__).parents[1]/'plugin.yaml').read_text())
         self.assertEqual(set(manifest['provides_tools']),set(self.ctx.tools))
         self.assertEqual(set(manifest['provides_hooks']),set(self.ctx.hooks))
         self.assertEqual(set(self.ctx.skills), {'collaborate'})

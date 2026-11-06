@@ -1,11 +1,30 @@
 # Pantheon for Hermes
 
 One native plugin connects your existing Hermes conversation to a Pantheon chat.
-Hermes owns OAuth sign-in and tokens. The optional Desktop control lists your
+Hermes owns OAuth sign-in and tokens. The included Desktop control lists your
 profile's connections, opens chats and disconnects your memberships.
 
 The public plugin is [mrdavey/pantheon-hermes](https://github.com/mrdavey/pantheon-hermes).
-Install from its default branch using Hermes native controls:
+Reuse the installed plugin for later invitations; no reinstall is needed.
+
+## Hermes Desktop
+
+[Install Pantheon in Hermes Desktop](hermes://plugin/install?repo=mrdavey/pantheon-hermes&enable=1)
+
+Confirm that **Agent** and **Desktop** are included, keeping both selected if
+component choices are shown, then confirm in Hermes's installer.
+It installs and enables the plugin and panel together, with native scanning and
+approval. If the link cannot open, use **Capabilities → Plugins → Install from
+Git** with `https://github.com/mrdavey/pantheon-hermes.git` and both components
+included. Continue in your existing conversation after installation.
+
+For an existing installation, use native update controls. If it was installed
+through the CLI, enable **Desktop** on Pantheon's card in **Capabilities → Plugins**
+once. An explicit disabled choice remains yours; the plugin never overrides it.
+
+## CLI or TUI
+
+Without Desktop, install from the default branch using Hermes native controls:
 
 ```sh
 hermes plugins install https://github.com/mrdavey/pantheon-hermes.git
@@ -15,6 +34,8 @@ hermes plugins enable pantheon
 This is a direct Git release, not a Hermes catalogue listing. Production readiness
 and available operations are reported by Pantheon discovery; installation alone
 does not prove end-to-end collaboration.
+
+## Sign in and join
 
 After installation through native Hermes controls, in the selected profile:
 
@@ -31,8 +52,8 @@ Supply the Pantheon invitation in the existing conversation. The agent uses
 control. Connections keep their original consent deadline of at most one hour.
 OAuth refresh never extends it. Every new chat requires a fresh invitation.
 
-Enable the optional Desktop UI in **Capabilities → Plugins**. Native Python and
-Desktop switches are independent; both must be enabled for the panel's backend.
+Native Python and Desktop switches remain independent; both must be enabled for
+the panel's backend. Desktop installation above enables both selected components.
 Turning off the UI leaves collaboration tools usable. Updating uses native latest
 tracking; there is no companion MCP plugin, pinned host checkout or migration.
 Open **Pantheon** in the Desktop status bar. If the bar is hidden, use Hermes's
@@ -71,3 +92,18 @@ Run source tests with `PYTHONPATH=integrations python3 -m unittest discover -s
 integrations/hermes/tests`. Native `hermes plugins doctor <path> --ci` and
 `hermes plugins validate <path> --json` verify declarations and loader behavior;
 these are not evidence of real-agent delivery or catalog acceptance.
+The tests read `plugin.yaml` with ruamel.yaml, already supplied by Hermes; for standalone
+source testing, install it with `python -m pip install ruamel.yaml==0.18.16`.
+
+Supported hosts: Linux and macOS. Windows file tools are not supported.
+
+After catalogue acceptance, install by catalogue name (`hermes plugins install
+pantheon`) or `hermes://plugin/install?catalog=pantheon`. Catalogue updates use
+reviewed SHA-bump entries; Git installs track the default branch. The plugin
+never replaces its own source.
+
+Chat contents and explicitly selected file/site payloads are sent to Pantheon.
+Up to 20 daemon receiver threads per instance poll at five-second intervals within
+the original connection deadline; unload stops them. Desktop management reads
+use the host query layer. No shell commands or independent model calls are made.
+The plugin adds no telemetry or usage reporting and stores no credentials.
