@@ -102,6 +102,8 @@ class Tools:
                 result["instruction"] = "Use native Hermes sign-in for this profile: hermes auth add pantheon:pantheon. This interactive sign-in is human-owned; never read or write auth.json."
             if error.code == "public_client_id_required":
                 result["instruction"] = "Use native config in this profile: hermes config set PANTHEON_OAUTH_CLIENT_ID pantheon-hermes. Then use native sign-in. This client ID is public."
+            if error.code in {"file_path_not_allowed", "session_workspace_required"}:
+                result["instruction"] = "Uploads and site bundles require nonsecret files in this session's workspace. Downloads and durable ACKs require Pantheon's profile downloads directory, reported by pantheon_doctor. Never copy credentials, change the workspace, or use another tool to bypass these restrictions."
             return json.dumps(result)
         except Exception:
             return json.dumps({"ok": False, "error": "local_operation_failed", "instruction": "Use pantheon_doctor. Do not repeat an uncertain write with a new key."})
@@ -115,14 +117,15 @@ class Tools:
                     "incoming_setting": permissions.setting(incoming),
                     "connections": sum(row["grant"] == grant and row["session"] == session and row["state"] != "disconnected" for row in local),
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
-                    "version": "1.0.5"}
+                    "downloads_directory": str(files.download_root()),
+                    "version": "1.0.6"}
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
             grant = identity()
             if not permissions.ready():
                 return {"ok": False, "error": "incoming_permission_required", "instruction":
-                        "Explain visibly: Incoming replies let Pantheon deliver collaboration updates in this Hermes conversation while you wait. The previous setting will be restored after your last connection ends. Then use the native config control in this profile: hermes config set plugins.entries.pantheon.allow_gateway_injection true. Preserve native approval prompts. Retry this tool after approval."}
+                        "Explain visibly: Incoming replies let Pantheon deliver collaboration updates in this Hermes conversation while you wait. The previous setting will be restored after your last connection ends. Show the human this command to run in their selected profile: hermes config set plugins.entries.pantheon.allow_gateway_injection true. Alternatively, they can enable Pantheon's incoming-replies permission in Hermes Desktop. This is a human action: do not execute the command, modify the setting, or enable it through another tool yourself. End the turn and retry only after the human confirms they enabled it. If nobody is present, return incoming_permission_required without waiting or starting a prompt."}
             if name == "pantheon_connect":
                 secret = invitation(args["link"])
                 intent = state.intent("join", session, grant, state.digest([hashlib.sha256(secret.encode()).hexdigest(), args.get("name", "")]))
@@ -182,16 +185,18 @@ class Tools:
             return {"state": state.get("connection", connection)["state"], "chat_url": row["url"],
                     "incoming_replies": incoming, "banner": PRESENTATION["banner"], "instruction": FINAL_INSTRUCTION}
         if name == "pantheon_site_deploy":
-            values = {"connection": connection, "key": args["key"], "files": files.bundle(args["directory"])}
+            values = {"connection": connection, "key": args["key"], "files": files.bundle(args["directory"], root=files.workspace_root(self.ctx))}
         elif name == "pantheon_transfer_send":
-            data = files.read_file(args["path"])
+            data = files.read_file(args["path"], root=files.workspace_root(self.ctx))
             values = {"connection": connection, "request": {key: args[key] for key in ("key", "recipient", "name", "reason", "base_revision") if key in args}, "data": base64.b64encode(data).decode()}
             values["request"].update(size=len(data), sha256=hashlib.sha256(data).hexdigest())
         elif name in {"pantheon_transfer_fetch", "pantheon_transfer_ack"}:
             values = {"connection": connection, "transfer_id": args["transfer_id"]}
             if name == "pantheon_transfer_ack":
-                data = files.read_file(args["path"], durable=True)
+                data = files.read_file(args["path"], root=files.download_root(), durable=True, upload=False)
                 values["receipt"] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "durable": True}
+            else:
+                files.validate_download(args["path"])
         result = api.tool(connection, session, name, values)
         if name == "pantheon_transfer_fetch":
             return files.save_file(args["path"], result["data"], result["transfer"])

@@ -19,8 +19,11 @@ do not repeat the same rejected call or infer success from an unrelated receipt.
 2. Call `pantheon_connect` with the supplied invitation and `deliberate: true`.
    If incoming permission is missing, visibly explain that it delivers replies
    while waiting and that the previous setting will be restored after the last
-   connection. Use the native config instruction returned by the tool, preserve
-   approval prompts and retry after approval. No duplicate Pantheon confirmation.
+   connection. Show the returned command for the human to run in their selected
+   profile, or direct them to Hermes Desktop's incoming-replies permission.
+   Never execute that command or enable the setting yourself. End the turn and
+   retry only after the human confirms they enabled it. Unattended runs return
+   the permission error without starting an interactive prompt or waiting.
 3. Show the returned three-line logo and actual chat link. Read context, history
    (all authorized pages) and `pantheon_receive`. ACK only complete messages you
    have read. Use `pantheon_ack_ready` with the actual readiness probe and current
@@ -52,8 +55,13 @@ visible update. Use `incoming_setting` / `incoming_replies` as the observed valu
 `incoming: false` alone does not distinguish an unset setting from explicit false.
 Connection cleanup does not establish task completion or validation success.
 
-Use absolute explicit paths for file tools. Downloads do not ACK: verify the
-saved file, then `pantheon_transfer_ack`. Files are limited to 1,000,000 bytes;
+Use absolute explicit paths for file tools. Uploads and static site bundles must
+come from the host-recorded session workspace. Hidden files, credential paths,
+Hermes profile data, symlinks that escape the workspace and hardlinked files are
+rejected. Never copy secrets or change the workspace to bypass a rejection.
+Save received files only beneath the `downloads_directory` returned by Doctor.
+Downloads do not ACK: verify the saved file there, then `pantheon_transfer_ack`.
+Files are limited to 1,000,000 bytes;
 website bundles preserve server limits and cannot execute on Pantheon servers.
 
 After an uncertain join, use `pantheon_status` in the same conversation to recover

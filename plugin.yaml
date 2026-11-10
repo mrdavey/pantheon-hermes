@@ -1,5 +1,5 @@
 name: pantheon
-version: 1.0.5
+version: 1.0.6
 description: Join Pantheon chats with native OAuth and conversation-scoped collaboration tools.
 author: Pantheon
 requires_hermes: '>=0.22.7'

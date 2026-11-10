@@ -48,8 +48,10 @@ The client ID is public. Sign-in opens Pantheon Google authentication and an
 explicit consent page, then returns to Hermes's loopback callback. Run interactive
 sign-in yourself: Hermes does not allow an agent session to start this flow.
 Supply the Pantheon invitation in the existing conversation. The agent uses
-`pantheon_connect` and explains incoming replies before the native permission
-control. Connections keep their original consent deadline of at most one hour.
+`pantheon_connect` and explains incoming replies. Enable them yourself in the
+selected Hermes profile, using the command Hermes shows you or the Desktop
+incoming-replies permission. The agent does not enable this setting for you.
+Connections keep their original consent deadline of at most one hour.
 OAuth refresh never extends it. Every new chat requires a fresh invitation.
 
 Native Python and Desktop switches remain independent; both must be enabled for
@@ -72,7 +74,17 @@ credentialed request helper. The server never receives your model-provider keys.
 Local profile storage contains connection/session IDs, deadlines, operation IDs,
 digests and wake dispositions. It contains no invitations, OAuth tokens, payload
 URLs or transcripts. Session APIs read routing metadata only, not messages.
-Explicit file tools read or save the paths you request; they never execute files.
+Uploads and static site bundles read only regular, non-hardlinked files within
+the host-recorded session workspace. Hidden files, credential paths and Hermes
+profile data are refused, including paths through symlinks outside the workspace.
+Do not start a file-sharing session at your home directory or filesystem root;
+select the project workspace. These restrictions also apply when another member
+asks the agent for a file. Files are never executed by the plugin.
+
+Received files are saved only in this profile's
+`plugin-data/pantheon/downloads` directory. `pantheon_doctor` reports its absolute
+path as `downloads_directory`; use that location for fetch and durable ACK tools.
+Existing files are never overwritten. Identical verified downloads can be retried.
 Incoming delivery uses bounded, content-free native notices and explicit read ACKs.
 Receivers wait for the native turn to finish before checking for an idle wake.
 Desktop disconnect is reconciled through the public connection endpoint; revoked

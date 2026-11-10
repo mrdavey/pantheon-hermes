@@ -2,6 +2,9 @@ import contextlib
 import contextvars
 import importlib.util
 import json
+import base64
+import hashlib
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -37,6 +40,7 @@ class Context:
     def profile_name(self): return PROFILE.get()
     def __init__(self): self.tools={};self.hooks={};self.skills={};self.unload=[];self.injected=[]
     def session_surface(self): return 'desktop'
+    def session_cwd(self): return str(self.cwd)
     def register_skill(self, **kwargs): self.skills[kwargs['name']]=kwargs
     def register_tool(self, **kwargs): self.tools[kwargs['name']]=kwargs
     def register_hook(self, name, handler): self.hooks[name]=handler
@@ -56,6 +60,11 @@ class NativeTests(unittest.TestCase):
             finally: db.close()
         self.patch=patch.object(state,'database',database);self.patch.start();self.addCleanup(self.patch.stop)
         self.ctx=Context();self.runtime=Runtime(self.ctx);self.addCleanup(self.runtime.stop)
+        self.root=Path(self.temp.name).resolve()
+        self.ctx.cwd=self.root/'workspace';self.ctx.cwd.mkdir()
+        self.downloads=self.root/'downloads';self.downloads.mkdir()
+        for name,value in [('download_root',self.downloads),('hermes_home',self.root/'profile')]:
+            p=patch.object(files,name,return_value=value);p.start();self.addCleanup(p.stop)
         self.tools=Tools(self.ctx,self.runtime)
     def row(self, **extra):
         value={'id':CONNECTION,'chat':'room','member':'hermes','url':'https://pantheon.talk/app?chat=room',
@@ -225,10 +234,11 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(result['route'], 'native-desktop-route')
     def test_download_integrity_no_overwrite_and_explicit_receipt(self):
         import base64,hashlib
-        target=Path(self.temp.name)/'saved.txt';data=b'complete payload'
+        target=self.downloads/'saved.txt';data=b'complete payload'
         meta={'size':len(data),'sha256':hashlib.sha256(data).hexdigest()}
         receipt=files.save_file(str(target),base64.b64encode(data).decode(),meta)
         self.assertTrue(receipt['durable']);self.assertEqual(target.read_bytes(),data)
+        self.assertEqual(files.save_file(str(target),base64.b64encode(data).decode(),meta),receipt)
         target.write_text('changed')
         with self.assertRaises(api.APIError):files.save_file(str(target),base64.b64encode(data).decode(),meta)
         with self.assertRaises(api.APIError):files.save_file(str(target),'eA==',meta)
@@ -329,10 +339,113 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(result['incoming'],value is True)
 
     def test_durable_ack_flushes_file_and_directory(self):
-        target=Path(self.temp.name)/'receipt.txt';target.write_bytes(b'received')
+        target=self.downloads/'receipt.txt';target.write_bytes(b'received')
         with patch.object(files.os,'fsync') as sync:
-            self.assertEqual(files.read_file(str(target),durable=True),b'received')
+            self.assertEqual(files.read_file(str(target),root=self.downloads,durable=True,upload=False),b'received')
         self.assertEqual(sync.call_count,2)
+
+    def test_downloads_cannot_write_outside_storage(self):
+        data=b'peer data';meta={'size':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+        targets=[self.root/'autostart',self.ctx.cwd/'new.py',self.downloads/'..'/'outside',self.downloads/'.env']
+        for target in targets:
+            with self.subTest(path=target),self.assertRaises(api.APIError):
+                files.save_file(str(target),base64.b64encode(data).decode(),meta)
+            self.assertFalse(target.exists())
+        outside=self.root/'outside';outside.mkdir()
+        (self.downloads/'escape').symlink_to(outside,target_is_directory=True)
+        with self.assertRaises(api.APIError):files.save_file(str(self.downloads/'escape'/'new.py'),base64.b64encode(data).decode(),meta)
+        self.assertFalse((outside/'new.py').exists())
+
+    def test_uploads_are_confined_and_refuse_sensitive_paths(self):
+        targets=[self.root/'outside.txt',self.ctx.cwd/'.env',self.ctx.cwd/'.env.production',
+                 self.ctx.cwd/'.ssh'/'id_rsa',self.ctx.cwd/'.aws'/'config',self.ctx.cwd/'.config'/'gcloud'/'secret',
+                 self.ctx.cwd/'.kube'/'config',self.ctx.cwd/'auth.json',self.ctx.cwd/'credentials.json']
+        for target in targets:
+            target.parent.mkdir(parents=True,exist_ok=True);target.write_text('synthetic secret')
+            with self.subTest(path=target),self.assertRaises(api.APIError):files.read_file(str(target),root=self.ctx.cwd)
+        valid=self.ctx.cwd/'public.txt';valid.write_bytes(b'public payload')
+        self.assertEqual(files.read_file(str(valid),root=self.ctx.cwd),b'public payload')
+        (self.ctx.cwd/'escape.txt').symlink_to(self.root/'outside.txt')
+        with self.assertRaises(api.APIError):files.read_file(str(self.ctx.cwd/'escape.txt'),root=self.ctx.cwd)
+        os.link(self.root/'outside.txt',self.ctx.cwd/'hardlink.txt')
+        with self.assertRaises(api.APIError):files.read_file(str(self.ctx.cwd/'hardlink.txt'),root=self.ctx.cwd)
+        os.mkfifo(self.ctx.cwd/'pipe')
+        with self.assertRaises(api.APIError):files.read_file(str(self.ctx.cwd/'pipe'),root=self.ctx.cwd)
+
+    def test_uploads_exclude_custom_hermes_home_even_beneath_workspace(self):
+        profile=self.ctx.cwd/'custom-profile';profile.mkdir();target=profile/'nonsecret-name.txt';target.write_text('synthetic')
+        with patch.object(files,'hermes_home',return_value=profile):
+            with self.assertRaises(api.APIError):files.read_file(str(target),root=self.ctx.cwd)
+            with self.assertRaises(api.APIError):files.bundle(str(profile),root=self.ctx.cwd)
+            (self.ctx.cwd/'index.html').write_text('<p>Public</p>')
+            with self.assertRaises(api.APIError):files.bundle(str(self.ctx.cwd),root=self.ctx.cwd)
+            with patch.object(self.ctx,'session_cwd',return_value=str(profile)):
+                with self.assertRaises(api.APIError):files.workspace_root(self.ctx)
+
+    def test_invalid_workspace_cannot_expand_upload_authority(self):
+        for value in ('', '.', '/', str(Path.home()), str(self.root/'profile')):
+            Path(self.root/'profile').mkdir(exist_ok=True)
+            with self.subTest(value=value),patch.object(self.ctx,'session_cwd',return_value=value),self.assertRaises(api.APIError):files.workspace_root(self.ctx)
+
+    def test_file_rejections_precede_transfer_or_site_requests(self):
+        self.row();outside=self.root/'outside.txt';outside.write_text('synthetic')
+        cases=[('pantheon_transfer_send',{'path':str(outside)}),
+               ('pantheon_site_deploy',{'directory':str(self.root),'key':'site'}),
+               ('pantheon_transfer_fetch',{'path':str(outside),'transfer_id':'t'}),
+               ('pantheon_transfer_ack',{'path':str(outside),'transfer_id':'t'})]
+        with patch.object(api,'request',return_value={'grant_id':GRANT}),patch.object(api,'tool') as remote:
+            for name,args in cases:
+                with self.subTest(tool=name),self.assertRaises(api.APIError):self.tools.dispatch(name,dict(args,connection=CONNECTION),SESSION)
+            remote.assert_not_called()
+
+    def test_ordinary_transfer_and_static_site_use_confined_files(self):
+        self.row();source=self.ctx.cwd/'artifact.txt';source.write_bytes(b'artifact')
+        self.assertEqual(files.read_file(str(source),root=self.ctx.cwd),b'artifact')
+        site=self.ctx.cwd/'site';site.mkdir();(site/'index.html').write_text('<p>Hello</p>')
+        bundle=files.bundle(str(site),root=self.ctx.cwd)
+        self.assertEqual([item['path'] for item in bundle],['index.html'])
+        self.assertEqual(base64.b64decode(bundle[0]['data']),b'<p>Hello</p>')
+        with patch.object(api,'request',return_value={'grant_id':GRANT}),patch.object(api,'tool',return_value={}) as remote,patch.object(self.runtime,'start'):
+            self.tools.dispatch('pantheon_transfer_send',{'connection':CONNECTION,'path':str(source),'key':'send','recipient':'peer','name':'artifact.txt','reason':'review'},SESSION)
+        self.assertEqual(remote.call_args.args[3]['data'],base64.b64encode(b'artifact').decode())
+
+    def test_site_bundles_reject_nested_secrets_and_symlinks(self):
+        site=self.ctx.cwd/'site';site.mkdir();(site/'index.html').write_text('<p>Safe</p>')
+        for name in ('.env','auth.json','.ssh','credentials.json'):
+            target=site/name;target.write_text('synthetic secret')
+            with self.subTest(name=name),self.assertRaises(api.APIError):files.bundle(str(site),root=self.ctx.cwd)
+            target.unlink()
+        (site/'leak').symlink_to(self.root,target_is_directory=True)
+        with self.assertRaises(api.APIError):files.bundle(str(site),root=self.ctx.cwd)
+
+    def test_parent_replacement_cannot_redirect_read_or_write(self):
+        outside=self.root/'outside';outside.mkdir();(outside/'data.txt').write_text('secret')
+        inside=self.ctx.cwd/'nested';inside.mkdir();(inside/'data.txt').write_text('public')
+        original_open=os.open
+        def racing_open(path,*args,**kwargs):
+            if path=='nested':
+                inside.rename(self.ctx.cwd/'original');inside.symlink_to(outside,target_is_directory=True)
+            return original_open(path,*args,**kwargs)
+        with patch.object(files.os,'open',side_effect=racing_open),self.assertRaises(OSError):
+            files.read_file(str(inside/'data.txt'),root=self.ctx.cwd)
+        destination=self.downloads/'nested';destination.mkdir()
+        def racing_write(path,*args,**kwargs):
+            if path=='nested':
+                destination.rename(self.downloads/'original');destination.symlink_to(outside,target_is_directory=True)
+            return original_open(path,*args,**kwargs)
+        metadata={'size':4,'sha256':hashlib.sha256(b'data').hexdigest()}
+        with patch.object(files.os,'open',side_effect=racing_write),self.assertRaises(OSError):
+            files.save_file(str(destination/'new.txt'),base64.b64encode(b'data'),metadata)
+        self.assertFalse((outside/'new.txt').exists())
+
+    def test_missing_incoming_permission_requires_human_without_join_or_wait(self):
+        args={'link':'https://pantheon.talk/join?invite='+'A'*43,'deliberate':True}
+        with patch.object(api,'request',return_value={'grant_id':GRANT}) as request,patch.object(permissions,'current',return_value=False),patch.object(self.runtime,'start') as start:
+            result=self.tools.dispatch('pantheon_connect',args,SESSION)
+        self.assertEqual(result['error'],'incoming_permission_required')
+        self.assertIn('Show the human',result['instruction']);self.assertIn('do not execute',result['instruction'])
+        self.assertIn('End the turn',result['instruction']);self.assertIn('without waiting',result['instruction'])
+        self.assertEqual([c.args[:2] for c in request.call_args_list],[('GET','/identity')]);start.assert_not_called()
 
     def test_recovered_join_uses_current_disconnected_state(self):
         from hermes.pantheon_native.tools import recover
@@ -343,5 +456,33 @@ class NativeTests(unittest.TestCase):
         with patch.object(threading.Thread,'start') as start:
             self.runtime.start(row)
         self.assertEqual(row['state'],'disconnected');start.assert_not_called()
+
+class HostStorageTests(unittest.TestCase):
+    def setUp(self):
+        try:
+            import hermes_constants
+            import plugins.plugin_storage
+        except ImportError:
+            self.skipTest('real Hermes host supplied by the isolated contract runner')
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.profile=Path(self.temp.name).resolve()/'profile';self.profile.mkdir()
+        selected=patch.object(hermes_constants,'get_hermes_home',return_value=self.profile)
+        selected.start();self.addCleanup(selected.stop)
+
+    def test_download_directory_uses_public_profile_storage(self):
+        root=files.download_root()
+        self.assertEqual(root,self.profile/'plugin-data/pantheon/downloads')
+        self.assertEqual(root.stat().st_mode & 0o777,0o700)
+        data=b'new-user download';metadata={'size':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+        result=files.save_file(str(root/'artifact.txt'),base64.b64encode(data),metadata)
+        self.assertTrue(result['durable'])
+        self.assertEqual(files.read_file(result['path'],root=root,upload=False),data)
+
+    def test_download_directory_rejects_replaced_storage(self):
+        root=files.download_root();root.rmdir()
+        outside=Path(self.temp.name).resolve()/'outside';outside.mkdir()
+        root.symlink_to(outside,target_is_directory=True)
+        with self.assertRaises(OSError):files.download_root()
+        self.assertEqual(list(outside.iterdir()),[])
 
 if __name__=='__main__':unittest.main()
