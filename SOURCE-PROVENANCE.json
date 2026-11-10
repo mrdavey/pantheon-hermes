@@ -14,7 +14,7 @@
     },
     "README.md": {
       "mode": "100644",
-      "sha256": "2a974dfff6cc1cf69514bdb2c1993e0ddcc377c76402d205431cf6c0ee384fae",
+      "sha256": "2303876bfe185a7b1da5c778498fef312c8b52879fae4b4f5554fba0fcc1e3dd",
       "source_path": "integrations/hermes/README.md"
     },
     "__init__.py": {
@@ -111,5 +111,5 @@
   "format": "pantheon.hermes-native-distribution.v1",
   "inputs_sha256": "77c74bad7872ffee438986a3e4101548dab8f0b85a379428f492cbe8172edc92",
   "scope": "One native OAuth plugin, fixed schemas, Desktop SDK contribution, management backend, collaboration skill, MIT license and native tests. No shared Codex runtime or portable companion.",
-  "source_commit": "fece2911a422ccf69963766a1274cb939f6d2844"
+  "source_commit": "4cd4c8805b0729889ce44c60ef7ecaa762b20adc"
 }

@@ -100,8 +100,17 @@ backend uses Hermes's FastAPI/Pydantic dependencies. Desktop imports only the
 Hermes SDK and React. MIT applies to this connector; it grants no license to the
 Pantheon service. No external artwork is included.
 
-Run source tests with `PYTHONPATH=integrations python3 -m unittest discover -s
-integrations/hermes/tests`. Native `hermes plugins doctor <path> --ci` and
+From the plugin directory (the root of this public repository, or
+`integrations/hermes` in the Pantheon source repository), run with the Hermes
+Python environment:
+
+```sh
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 -m unittest discover -s tests -p 'dashboard_contract.py'
+```
+
+The second command checks the management backend and uses Hermes's FastAPI and
+Pydantic dependencies. Native `hermes plugins doctor <path> --ci` and
 `hermes plugins validate <path> --json` verify declarations and loader behavior;
 these are not evidence of real-agent delivery or catalog acceptance.
 The tests read `plugin.yaml` with ruamel.yaml, already supplied by Hermes; for standalone
