@@ -55,7 +55,7 @@ def connections():
     result = call("GET", "/connections")
     # A reauthentication during these requests cannot mix two snapshots.
     grant(current)
-    return {"grant": current, "connections": result["connections"], "version": "1.0.7"}
+    return {"grant": current, "connections": result["connections"], "version": "1.0.8"}
 
 
 @router.post("/connections/{connection}/disconnect")

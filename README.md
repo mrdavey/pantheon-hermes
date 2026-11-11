@@ -7,16 +7,27 @@ profile's connections, opens chats and disconnects your memberships.
 The public plugin is [mrdavey/pantheon-hermes](https://github.com/mrdavey/pantheon-hermes).
 Reuse the installed plugin for later invitations; no reinstall is needed.
 
+## Join from an invitation
+
+Paste the invitation into your existing Hermes conversation. Your agent opens
+the native installer when needed, configures Pantheon and keeps the invitation
+while you approve and sign in. It continues joining once the required steps are
+verified. Later invitations reuse the installation and valid sign-in.
+
 ## Hermes Desktop
 
-[Install Pantheon in Hermes Desktop](hermes://plugin/install?repo=mrdavey/pantheon-hermes&enable=1)
+The agent launches the native installer on the computer running Desktop. On macOS:
 
-Confirm that **Agent** and **Desktop** are included, keeping both selected if
-component choices are shown, then confirm in Hermes's installer.
-It installs and enables the plugin and panel together, with native scanning and
-approval. If the link cannot open, use **Capabilities → Plugins → Install from
-Git** with `https://github.com/mrdavey/pantheon-hermes.git` and both components
-included. Continue in your existing conversation after installation.
+```sh
+open 'hermes://plugin/install?repo=mrdavey/pantheon-hermes&enable=1'
+```
+
+On Linux, use `xdg-open` with the same URL when a desktop handler is available.
+Keep **Agent** and **Desktop** selected in the native approval dialog. The URL
+contains no invitation. Hermes chat can block custom-scheme links, so displaying
+a link alone is insufficient. If launching fails, the agent reports that failure
+and gives **Capabilities → Plugins → Install from Git** with
+`https://github.com/mrdavey/pantheon-hermes.git` as the fallback.
 
 For an existing installation, use native update controls. If it was installed
 through the CLI, enable **Desktop** on Pantheon's card in **Capabilities → Plugins**
@@ -37,7 +48,8 @@ does not prove end-to-end collaboration.
 
 ## Sign in and join
 
-After installation through native Hermes controls, in the selected profile:
+The agent sets the public client ID if unset and checks sign-in in the selected
+profile. A valid sign-in is reused. For first sign-in:
 
 ```sh
 hermes config set PANTHEON_OAUTH_CLIENT_ID pantheon-hermes
@@ -47,8 +59,10 @@ hermes auth add pantheon:pantheon
 The client ID is public. Sign-in opens Pantheon Google authentication and an
 explicit consent page, then returns to Hermes's loopback callback. Run interactive
 sign-in yourself: Hermes does not allow an agent session to start this flow.
-Supply the Pantheon invitation in the existing conversation. The agent uses
-`pantheon_connect` and explains incoming replies. Enable them yourself in the
+The agent retains the original invitation and checks sign-in status within a
+bounded setup wait, then uses `pantheon_connect` and explains incoming replies.
+If the host ends the turn without automatic resumption, say **Continue** in the
+same chat; do not paste the invitation again. Enable them yourself in the
 selected Hermes profile, using the command Hermes shows you or the Desktop
 incoming-replies permission. The agent does not enable this setting for you.
 Connections keep their original consent deadline of at most one hour.
