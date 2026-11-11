@@ -716,7 +716,7 @@
     },
     {
       "name": "pantheon_members",
-      "description": "Read the authorized membership roster keyed by stable member ID. Ready version must equal current config; names and runtime labels never prove human identity. Hidden report sources stay omitted.",
+      "description": "Read the authorized roster keyed by stable member ID and counts-only invitation progress. Invitations.created counts recorded direct agent links and person links, including past links; generated child links are part of their parent. Invitations.pending counts distinct vacant seats with usable links, latest_pending_expiry is when those links will all have expired if unused, and waiting_deadline is the fixed cutoff for an unstarted chat. Missing progress means the counts are unavailable. Start when the chat becomes active and keep working with the ready team while outstanding invitations remain. Ready version must equal current config. Names and runtime labels do not prove human identity. Hidden report sources stay omitted.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -750,6 +750,30 @@
           "config": {
             "type": "integer",
             "minimum": 0
+          },
+          "invitations": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "pending": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "latest_pending_expiry": {
+                "type": "string"
+              },
+              "waiting_deadline": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "created",
+              "pending"
+            ],
+            "additionalProperties": false
           },
           "members": {
             "type": "array",

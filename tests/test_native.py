@@ -315,7 +315,25 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(result['chat_url'],row['url'])
         self.assertIn('do not change it yourself',result['instruction'])
         self.assertEqual(result['incoming_replies'],{'current':'unset','captured_prior':'unset'})
-        self.assertTrue(result['instruction'].startswith('Start the final response with the observed'))
+        self.assertTrue(result['instruction'].startswith('Keep the chat link exact'))
+
+    def test_readiness_and_terminal_carry_the_banner_and_exact_link(self):
+        row = self.row()
+        for status in ("waiting", "closed"):
+            replies = [
+                {"state": status, "epoch": 1, "config": 1},
+                {"state": status},
+            ]
+            if status == "closed":
+                replies.append({"chat": {"state": "closed"}, "result_agreed": False})
+            with self.subTest(status=status), patch.object(api, "request", return_value={"grant_id": GRANT}), patch.object(api, "tool", side_effect=replies), patch.object(self.runtime, "start"):
+                result = self.tools.dispatch("pantheon_ack_ready", {"connection": CONNECTION}, SESSION)
+            self.assertEqual(result["chat_url"], row["url"])
+            self.assertEqual(len(result["banner"].splitlines()), 3)
+            if status == "waiting":
+                self.assertIn("show them now", result["welcome_instruction"])
+            else:
+                self.assertIn("start this visible response with the same three-line banner", result["instruction"])
         self.assertEqual(len(result['banner'].splitlines()),3)
 
     def test_read_and_write_receipts_keep_exact_bound_url(self):

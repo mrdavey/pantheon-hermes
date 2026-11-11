@@ -12,9 +12,8 @@ CATALOG = json.loads((Path(__file__).parent / "catalog.json").read_text())["tool
 PRESENTATION = json.loads((Path(__file__).parent / "presentation.json").read_text())
 SCHEMAS = {item["name"]: item for item in CATALOG}
 FINAL_INSTRUCTION = (
-    "Start the final response with the observed chat/connection outcome, then the three-line banner and "
-    "the exact clickable chat_url below it. Copy chat_url verbatim, including its origin and full ID. "
-    "Describe only verified chat and cleanup facts; connection cleanup does not establish task completion or validation success. "
+    "Keep the chat link exact and describe only verified chat and cleanup facts. "
+    "Connection cleanup does not establish task completion or validation success. "
     "Use returned incoming_replies values when present; do not infer prior settings from earlier conversation turns. "
     "The plugin manages restoration after the last connection; do not change it yourself or add a config check just to compose the response."
 )
@@ -118,7 +117,7 @@ class Tools:
                     "connections": sum(row["grant"] == grant and row["session"] == session and row["state"] != "disconnected" for row in local),
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
                     "downloads_directory": str(files.download_root()),
-                    "version": "1.0.6"}
+                    "version": "1.0.7"}
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
@@ -148,9 +147,13 @@ class Tools:
                     row = store_connection(result, session, grant)
             state.update("intent", intent["id"], {"state": "accepted", "connection": row["id"]})
             self.runtime.start(row)
-            return {"ok": True, "connection": row["id"], "chat_url": row["url"], "deadline": row["deadline"],
+            connection = {"ok": True, "connection": row["id"], "chat_url": row["url"],
+                          "deadline": row["deadline"], "state": row["state"]}
+            if row["state"] not in {"connected", "waiting"}:
+                return {**connection, "instruction": "Report the observed connection state with the exact chat link. A recovered operation receipt does not establish a live connection."}
+            return {**connection,
                     "instruction": PRESENTATION["instruction"], "banner": PRESENTATION["banner"],
-                    "next": "Read context, complete authorized history and pending messages; explicitly ACK what you read and respond to readiness. End your turn while waiting."}
+                    "next": "Read context, complete authorized history and pending messages; explicitly ACK what you read and respond to readiness. Check pantheon_status for this connection. While the chat is waiting, end your turn without planning or doing the objective. When active with peers, negotiate roles and agree the definition of done before substantive work."}
         if name == "pantheon_status" and "connection" not in args:
             grant = identity()
             # Recover accepted joins before listing, without asking for invitation replay.
@@ -214,4 +217,7 @@ class Tools:
             # Keep the verified URL beside the latest read/write receipt, so a
             # model need not reconstruct it from an older conversation turn.
             result = {**result, "chat_url": row["url"]}
+            if name == "pantheon_ack_ready" or (name == "pantheon_command" and values.get("op") == "ready"):
+                result["banner"] = PRESENTATION["banner"]
+                result["welcome_instruction"] = "If this connection's join banner and link have not been shown, show them now before work or waiting: the banner first, then the exact clickable Open Pantheon chat link outside the code block, then the observed status."
         return result
