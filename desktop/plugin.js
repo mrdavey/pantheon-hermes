@@ -20,7 +20,8 @@ export function snapshot(value) {
     if (!row || !HANDLE.test(row.id || '') || seen.has(row.id) || !Object.hasOwn(LABELS, row.state)) return []
     seen.add(row.id)
     return [{ id: row.id, state: row.state, url: chatURL(row.url), session: typeof row.session === 'string' ? row.session : '',
-      deadline: typeof row.deadline === 'string' && Number.isFinite(Date.parse(row.deadline)) ? row.deadline : null }]
+      deadline: row.runtime_policy?.mode === 'connection' && row.deadline === '0001-01-01T00:00:00Z' ? null
+        : typeof row.deadline === 'string' && Number.isFinite(Date.parse(row.deadline)) ? row.deadline : null }]
   }) }
 }
 
@@ -151,8 +152,8 @@ export function PantheonControl({ ctx }) {
       }) : h('p', { role: 'status' }, label),
       phase === 'unavailable' && h('p', null, 'Sign in in this profile: ', h('code', null, 'hermes auth add pantheon:pantheon')),
       h('details', { style: { marginTop: 16 } }, h('summary', { style: { minHeight: 32 } }, 'Diagnostics'),
-        h('p', null, 'Pantheon 1.0.9 · ', phase),
-        h(Button, { type: 'button', variant: 'outline', style: { minHeight: 44 }, onClick: () => void ctx.os.writeClipboard('Pantheon 1.0.9 · ' + phase) }, 'Copy diagnostics'),
+        h('p', null, 'Pantheon 1.0.10 · ', phase),
+        h(Button, { type: 'button', variant: 'outline', style: { minHeight: 44 }, onClick: () => void ctx.os.writeClipboard('Pantheon 1.0.10 · ' + phase) }, 'Copy diagnostics'),
         view && h(Button, { type: 'button', variant: 'outline', disabled: phase === 'revoking', style: { minHeight: 44 }, onClick: () => void revoke() }, 'Revoke authorization')),
       h(Button, { type: 'button', variant: 'ghost', style: { minHeight: 44, marginTop: 8 }, onClick: () => host.navigate('/capabilities?tab=plugins') }, 'Plugin settings')))
 }

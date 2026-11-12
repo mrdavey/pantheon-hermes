@@ -64,8 +64,10 @@ def store_connection(result, session, grant):
     previous = state.get("connection", result["id"]) or {}
     # No returned authority or content is copied wholesale into local state.
     row = {key: result[key] for key in ("id", "chat", "member", "url", "deadline", "state")}
+    if 'runtime_policy' in result:
+        row['runtime_policy'] = result['runtime_policy']
     row.update(session=session, grant=grant)
-    for key in ("cleanup_operation", "wake", "wake_state"):
+    for key in ("cleanup_operation", "wake", "wake_state", "terminal_deadline", "terminal_seen"):
         if key in previous and previous.get("grant") == grant and previous.get("session") == session:
             row[key] = previous[key]
     state.put("connection", row["id"], row)
@@ -127,25 +129,31 @@ class Tools:
                     "connections": sum(row["grant"] == grant and row["session"] == session and row["state"] != "disconnected" for row in local),
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
                     "downloads_directory": str(files.download_root()),
-                    "version": "1.0.9"}
+                    "version": "1.0.10"}
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
             grant = identity()
             if not permissions.ready():
                 return {"ok": False, "error": "incoming_permission_required", "instruction":
-                        "Explain visibly: Incoming replies let Pantheon deliver collaboration updates in this Hermes conversation while you wait. The previous setting will be restored after your last connection ends. Show the human this command to run in their selected profile: hermes config set plugins.entries.pantheon.allow_gateway_injection true. Alternatively, they can enable Pantheon's incoming-replies permission in Hermes Desktop. This is a human action: do not execute the command, modify the setting, or enable it through another tool yourself. End the turn and retry only after the human confirms they enabled it. If nobody is present, return incoming_permission_required without waiting or starting a prompt."}
+                        "Explain visibly: Incoming replies let Pantheon deliver collaboration updates in this Hermes conversation while you wait, including after reopening this conversation, until the connection ends or its chosen deadline. The previous setting will be restored after your last connection ends. Show the human this command to run in their selected profile: hermes config set plugins.entries.pantheon.allow_gateway_injection true. Alternatively, they can enable Pantheon's incoming-replies permission in Hermes Desktop. This is a human action: do not execute the command, modify the setting, or enable it through another tool yourself. End the turn and retry only after the human confirms they enabled it. If nobody is present, return incoming_permission_required without waiting or starting a prompt."}
             if name == "pantheon_connect":
                 secret = invitation(args["link"])
-                intent = state.intent("join", session, grant, state.digest([hashlib.sha256(secret.encode()).hexdigest(), args.get("name", "")]))
+                lifetime = ({'deadline': datetime.fromtimestamp(args['expires_at'], timezone.utc).isoformat().replace('+00:00', 'Z')}
+                            if 'expires_at' in args else {'runtime_policy': {'mode': 'connection'}})
+                intent = state.intent("join", session, grant, state.digest([hashlib.sha256(secret.encode()).hexdigest(), args.get("name", "")]), lifetime=lifetime)
+                # Pending operations created by older plugins keep the same one-hour
+                # payload and receipt identity, even after a plugin update.
+                lifetime = intent.get('lifetime', {'deadline': datetime.fromtimestamp(intent['created'] + 3590, timezone.utc).isoformat().replace('+00:00', 'Z')})
+                if 'expires_at' in args and lifetime != {'deadline': datetime.fromtimestamp(args['expires_at'], timezone.utc).isoformat().replace('+00:00', 'Z')}:
+                    raise api.APIError('original_consent_required')
                 row = recover(intent, session, grant)
                 if row is None:
                     # This deliberate tool call may retry the identical operation.
                     # Concurrent acceptance still has one transactional receipt.
-                    until = datetime.fromtimestamp(intent["created"] + 3590, timezone.utc).isoformat().replace("+00:00", "Z")
                     state.update("intent", intent["id"], {"state": "sent"})
                     result = api.request("POST", "/connections/join", {"session": session, "invitation": secret,
-                        "name": args.get("name", ""), "operation": intent["operation"], "deadline": until, "deliberate": True})
+                        "name": args.get("name", ""), "operation": intent["operation"], **lifetime, "deliberate": True})
                     row = store_connection(result, session, grant)
             else:
                 connection = api.handle(args["connection"])
@@ -159,6 +167,8 @@ class Tools:
             self.runtime.start(row)
             connection = {"ok": True, "connection": row["id"], "chat_url": row["url"],
                           "deadline": row["deadline"], "state": row["state"]}
+            if 'runtime_policy' in row:
+                connection['runtime_policy'] = row['runtime_policy']
             if row["state"] not in {"connected", "waiting"}:
                 return {**connection, "instruction": "Report the observed connection state with the exact chat link. A recovered operation receipt does not establish a live connection."}
             return {**connection, "setup_confirmation": SETUP_CONFIRMATION,

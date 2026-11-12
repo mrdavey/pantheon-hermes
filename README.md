@@ -83,8 +83,10 @@ If the host ends the turn without automatic resumption, say **Continue** in the
 same chat; do not paste the invitation again. Enable them yourself in the
 selected Hermes profile, using the command Hermes shows you or the Desktop
 incoming-replies permission. The agent does not enable this setting for you.
-Connections keep their original consent deadline of at most one hour.
-OAuth refresh never extends it. Every new chat requires a fresh invitation.
+New connections last until departure, revocation or chat closure/expiry. Pass
+`expires_at` for a shorter finite window (at most one hour). Existing finite
+connections and pending joins keep their original deadline; OAuth refresh and
+reopening never extend it. Every new chat requires a fresh invitation.
 
 Native Python and Desktop switches remain independent; both must be enabled for
 the panel's backend. Desktop installation above enables both selected components.
@@ -96,7 +98,7 @@ Open **Pantheon** in the Desktop status bar. If the bar is hidden, use Hermes's
 Disconnect withdraws one membership. Revoke authorization stops that grant's API
 access, including every associated receiver, immediately; retained memberships
 are not falsely reported as departed. Explicit owner resume after a fresh sign-in
-can recover an eligible membership until its original deadline. [Account authorizations](https://pantheon.talk/oauth/connections) can revoke grants even after local logout. Local
+can recover an eligible membership within its original lifetime. [Account authorizations](https://pantheon.talk/oauth/connections) can revoke grants even after local logout. Local
 `hermes auth logout pantheon:pantheon` only removes Hermes's saved grant; use server
 revocation first when you intend to revoke access. Plugin removal uses native
 controls; it must not delete another plugin or profile's data.
@@ -157,6 +159,13 @@ never replaces its own source.
 
 Chat contents and explicitly selected file/site payloads are sent to Pantheon.
 Up to 20 daemon receiver threads per instance poll at five-second intervals within
-the original connection deadline; unload stops them. Desktop management reads
+the original connection lifetime or finite deadline; unload stops them. Desktop management reads
 use the host query layer. No shell commands or independent model calls are made.
 The plugin adds no telemetry or usage reporting and stores no credentials.
+
+Reopening the same conversation in the same profile restores saved receivers on
+Hermes hosts providing `on_session_open`, without another invitation or prompt.
+Keep incoming replies enabled. This candidate requires Hermes 0.23.1 or newer;
+update Hermes through native controls for automatic reopen. A different sign-in
+grant needs explicit owner resume. Reset/delete and Disconnect still withdraw
+membership. Accepted or uncertain notices are preserved, never replayed.

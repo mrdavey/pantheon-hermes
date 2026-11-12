@@ -50,7 +50,7 @@ def update(kind, key, changes):
         return value
 
 
-def intent(kind, session, grant, payload_digest):
+def intent(kind, session, grant, payload_digest, lifetime=None):
     """Atomically reuse a pending identical request, with only its digest retained."""
     key = digest([kind, session, grant, payload_digest])
     with database() as db, db:
@@ -63,6 +63,8 @@ def intent(kind, session, grant, payload_digest):
             raise ValueError("local_operation_limit")
         value = {"id": key, "operation": uuid.uuid4().hex, "kind": kind, "session": session,
                  "grant": grant, "digest": payload_digest, "created": time.time(), "state": "prepared"}
+        if lifetime is not None:
+            value['lifetime'] = lifetime
         db.execute("INSERT INTO records VALUES ('intent',?,?)", (key, json.dumps(value)))
         return value
 
@@ -93,6 +95,35 @@ def cleanup_intent(connection, requested=None):
             return value
         value.setdefault("cleanup_operation", requested or uuid.uuid4().hex)
         value["state"] = "cleanup_pending"
+        db.execute("UPDATE records SET body=? WHERE kind='connection' AND id=?", (json.dumps(value), connection))
+        return value
+
+
+def restore_receiver(connection, session, grant):
+    """A concurrent Disconnect or rebind wins over an in-flight live check."""
+    with database() as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute("SELECT body FROM records WHERE kind='connection' AND id=?", (connection,)).fetchone()
+        if not row:
+            return None
+        value = json.loads(row[0])
+        if (value['session'] != session or value['grant'] != grant or value.get('state') in
+                {'disconnected', 'revoked', 'expired', 'closed', 'cleanup_pending'}):
+            return None
+        value['state'] = 'connected'
+        db.execute("UPDATE records SET body=? WHERE kind='connection' AND id=?", (json.dumps(value), connection))
+        return value
+
+
+def terminal_window(connection):
+    """The first terminal observation fixes the cleanup bound across processes."""
+    with database() as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute("SELECT body FROM records WHERE kind='connection' AND id=?", (connection,)).fetchone()
+        if not row:
+            return None
+        value = json.loads(row[0])
+        value.setdefault('terminal_deadline', time.time() + 60)
         db.execute("UPDATE records SET body=? WHERE kind='connection' AND id=?", (json.dumps(value), connection))
         return value
 

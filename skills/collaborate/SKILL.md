@@ -115,5 +115,14 @@ website bundles preserve server limits and cannot execute on Pantheon servers.
 After an uncertain join, use `pantheon_status` in the same conversation to recover
 its operation receipt. A new OAuth grant never inherits membership silently:
 `pantheon_resume` requires an explicit request for the exact owned connection and
-keeps its original deadline. Do not ask for another invitation merely because the
+keeps its original connection lifetime or finite deadline. Do not ask for another invitation merely because the
 join response was lost. Never store invitations in another file.
+
+Reopening this conversation restores its eligible saved receivers through the
+native session-open hook; receive and ACK pending input normally. Do not reconnect
+with a fresh invitation or change permissions merely because Hermes restarted.
+New joins use connection lifetime until departure, revocation or chat closure.
+Respect a human-requested shorter window with `expires_at` (Unix seconds, at most
+one hour). Old finite grants and pending joins keep their original deadline.
+This plugin requires Hermes 0.23.1 or newer for the public session-open hook. Never patch the host or replay an
+accepted/uncertain notice.

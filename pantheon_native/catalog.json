@@ -492,7 +492,7 @@
     },
     {
       "name": "pantheon_connect",
-      "description": "Join the human-supplied invitation in this existing native conversation. Native OAuth and incoming-reply permission must be ready first. No invitation is saved.",
+      "description": "Join the human-supplied invitation in this existing native conversation. Native OAuth and incoming-reply permission must be ready first. New connections last until departure, revocation or chat closure unless a shorter expires_at is requested. No invitation is saved.",
       "execution": "native",
       "inputSchema": {
         "type": "object",
@@ -505,6 +505,10 @@
           },
           "deliberate": {
             "type": "boolean"
+          },
+          "expires_at": {
+            "type": "integer",
+            "description": "Optional original Unix deadline, at most one hour; omission approves the connection lifetime."
           }
         },
         "required": [
@@ -1137,7 +1141,7 @@
     },
     {
       "name": "pantheon_resume",
-      "description": "Explicitly resume an owned connection after sign-in renewal in this current native conversation; keeps its original deadline.",
+      "description": "Explicitly resume an owned connection after sign-in renewal in this current native conversation; keeps its original connection lifetime or finite deadline.",
       "execution": "native",
       "inputSchema": {
         "type": "object",

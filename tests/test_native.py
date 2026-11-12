@@ -70,6 +70,106 @@ class NativeTests(unittest.TestCase):
         value={'id':CONNECTION,'chat':'room','member':'hermes','url':'https://pantheon.talk/app?chat=room',
                'deadline':'2099-01-01T00:00:00Z','state':'connected','session':dict(SESSION),'grant':GRANT}
         value.update(extra);state.put('connection',CONNECTION,value);return value
+    def test_reopen_catches_up_without_join_or_read_ack(self):
+        self.row(deadline='0001-01-01T00:00:00Z', runtime_policy={'mode':'connection'})
+        notified=threading.Event()
+        original=self.ctx.inject_message
+        def inject(*args, **kwargs):
+            result=original(*args, **kwargs);self.runtime.stop();notified.set();return result
+        pending=[{'message':{'id':'pending-1','kind':'post'}}]
+        def tool(connection, session, name, args):
+            self.assertEqual(connection,CONNECTION);self.assertEqual(session,SESSION)
+            self.assertIn(name,{'pantheon_chat_state','pantheon_receive'})
+            return pending if name=='pantheon_receive' else {'state':'active'}
+        with patch.object(permissions,'current',return_value=True), patch.object(api,'request',return_value={'grant_id':GRANT}) as request, patch.object(api,'tool',side_effect=tool), patch.object(self.ctx,'inject_message',side_effect=inject):
+            self.runtime.reopen(SESSION)
+            self.assertTrue(notified.wait(2))
+            request.assert_called_once_with('GET','/identity')
+        self.assertEqual(len(self.ctx.injected),1)
+        self.assertNotIn('pending-1',self.ctx.injected[0][1])
+        self.assertEqual(state.get('connection',CONNECTION)['runtime_policy'],{'mode':'connection'})
+
+    def test_open_hook_restores_only_its_observed_conversation(self):
+        register(self.ctx)
+        with patch('hermes.observe',return_value=SESSION), patch.object(Runtime,'schedule_reopen') as reopen:
+            self.ctx.hooks['on_session_open'](session_id='native-session',reason='resume')
+            reopen.assert_called_once_with(SESSION)
+
+    def test_reopen_does_not_change_grant_permission_or_receipts(self):
+        original=self.row(wake='old',wake_state='attempted')
+        with patch.object(permissions,'current',return_value=True), patch.object(api,'request',return_value={'grant_id':'another_grant_123456'}), patch.object(api,'tool') as tool, patch.object(self.runtime,'start') as start:
+            self.runtime.reopen(SESSION);tool.assert_not_called();start.assert_not_called()
+        self.assertEqual(state.get('connection',CONNECTION),original)
+        with patch.object(permissions,'current',return_value=False),patch.object(api,'request') as request:
+            self.runtime.reopen(SESSION);request.assert_not_called()
+        with patch.object(permissions,'current',return_value=True),patch.object(api,'request') as request:
+            self.runtime.reopen(dict(SESSION,id='another'));request.assert_not_called()
+
+    def test_reopen_checks_revocation_and_preserves_finite_expiry(self):
+        from hermes.pantheon_native.runtime import deadline
+        original=self.row(deadline='2000-01-01T00:00:00Z')
+        with patch.object(permissions,'current',return_value=True),patch.object(api,'request',return_value={'grant_id':GRANT}),patch.object(self.runtime,'disconnect') as disconnect,patch.object(self.runtime,'start') as start:
+            self.runtime.reopen(SESSION);disconnect.assert_called_once_with(original);start.assert_not_called()
+        self.row()
+        with patch.object(permissions,'current',return_value=True),patch.object(api,'request',return_value={'grant_id':GRANT}),patch.object(api,'tool',side_effect=api.APIError('access_unavailable')),patch.object(self.runtime,'start') as start:
+            self.runtime.reopen(SESSION);start.assert_not_called()
+        with self.assertRaises(api.APIError):deadline(dict(original,runtime_policy={'mode':'connection'}))
+
+    def test_new_connection_lifetime_and_legacy_pending_intent_do_not_mix(self):
+        secret='A'*43
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                with state.database() as db:
+                    db.execute('DELETE FROM records');db.commit()
+                if legacy:
+                    intent=state.intent('join',SESSION,GRANT,state.digest([hashlib.sha256(secret.encode()).hexdigest(),'']))
+                captured=[]
+                def request(method,path,body=None):
+                    if path=='/identity':return {'grant_id':GRANT}
+                    if path.startswith('/operations/'):raise api.APIError('not_accepted')
+                    self.assertEqual(path,'/connections/join');captured.append(body)
+                    result=self.row()
+                    if 'runtime_policy' in body:result.update(runtime_policy=body['runtime_policy'],deadline='0001-01-01T00:00:00Z')
+                    else:result['deadline']=body['deadline']
+                    return result
+                with patch.object(api,'request',side_effect=request),patch.object(permissions,'ready',return_value=True),patch.object(self.runtime,'start'):
+                    result=self.tools.dispatch('pantheon_connect',{'link':'https://pantheon.talk/join#invite='+secret,'deliberate':True},SESSION)
+                if legacy:
+                    self.assertNotIn('runtime_policy',captured[0]);self.assertNotIn('runtime_policy',result)
+                else:self.assertEqual(captured[0]['runtime_policy'],{'mode':'connection'})
+
+    def test_reopen_retries_transient_failure_and_stops_after_success(self):
+        self.row()
+        finished=threading.Event()
+        original=self.runtime.reopen
+        attempts=[]
+        def attempt(session):
+            attempts.append(session)
+            result=original(session)
+            if result is not False:finished.set()
+            return result
+        with patch.object(permissions,'current',return_value=True), patch.object(api,'request',side_effect=[api.APIError('outcome_unknown'),{'grant_id':GRANT}]), patch.object(api,'tool'), patch.object(self.runtime,'start') as start, patch.object(self.runtime,'reopen',side_effect=attempt):
+            self.runtime.schedule_reopen(SESSION)
+            self.assertTrue(finished.wait(4))
+            self.runtime.stop()
+            self.assertEqual(attempts,[SESSION,SESSION])
+            start.assert_called_once()
+
+    def test_disconnect_during_live_resume_check_wins(self):
+        self.row()
+        def checked(*args):state.cleanup_intent(CONNECTION)
+        with patch.object(permissions,'current',return_value=True),patch.object(api,'request',return_value={'grant_id':GRANT}),patch.object(api,'tool',side_effect=checked),patch.object(self.runtime,'start') as start:
+            self.runtime.reopen(SESSION)
+            start.assert_not_called()
+        self.assertEqual(state.get('connection',CONNECTION)['state'],'cleanup_pending')
+
+    def test_terminal_cleanup_deadline_never_moves_on_reopen(self):
+        self.row(deadline='0001-01-01T00:00:00Z',runtime_policy={'mode':'connection'})
+        with patch.object(state.time,'time',return_value=100):first=state.terminal_window(CONNECTION)
+        with patch.object(state.time,'time',return_value=140):second=state.terminal_window(CONNECTION)
+        self.assertEqual(first['terminal_deadline'],160)
+        self.assertEqual(second['terminal_deadline'],160)
+
     def test_registration_inert_and_exact(self):
         with patch.object(state,'database',side_effect=AssertionError('storage at registration')),patch.object(api,'request',side_effect=AssertionError('network at registration')),patch.object(threading.Thread,'start',side_effect=AssertionError('thread at registration')):
             register(self.ctx)
@@ -232,6 +332,12 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(result['surface'], 'desktop')
         self.assertEqual(result['id'], 'native-desktop-fixture')
         self.assertEqual(result['route'], 'native-desktop-route')
+        # A reopen occurs outside a model turn, before ctx.session_surface has
+        # an active policy. Only the host's hook platform may fill that gap.
+        register(self.ctx)
+        with patch.dict(os.environ, {'HERMES_HOME': self.temp.name}), scoped_session_key('native-desktop-route'), patch.object(self.ctx,'session_surface',return_value=''), patch.object(Runtime,'schedule_reopen') as reopen:
+            self.ctx.hooks['on_session_open'](session_id='native-desktop-fixture',platform='desktop',reason='resume')
+            reopen.assert_called_once_with(result)
     def test_download_integrity_no_overwrite_and_explicit_receipt(self):
         import base64,hashlib
         target=self.downloads/'saved.txt';data=b'complete payload'

@@ -50,9 +50,16 @@ def register(ctx):
         except api.APIError:
             pass
 
+    def opened(*, session_id=None, platform=None, **kwargs):
+        try:
+            runtime.schedule_reopen(observe(ctx, session_id, native_surface=platform))
+        except api.APIError:
+            pass
+
     ctx.register_hook("pre_llm_call", before)
     ctx.register_hook("post_llm_call", after)
     ctx.register_hook("on_session_end", turn_ended)
+    ctx.register_hook("on_session_open", opened)
     ctx.register_hook("on_session_reset", retire)
     ctx.register_hook("on_session_delete", retire)
     ctx.on_unload(runtime.stop)

@@ -3,7 +3,7 @@ from .api import APIError
 from . import state
 
 
-def observe(ctx, session_id=None):
+def observe(ctx, session_id=None, *, native_surface=None):
     from gateway.session_context import get_session_env
     from hermes_state import SessionDB
     session_id = session_id or get_session_env("HERMES_SESSION_ID")
@@ -17,7 +17,9 @@ def observe(ctx, session_id=None):
         # `local`. Neither storage label is the current client surface.
         if not row or row.get("source") not in {"cli", "tui", "gui", "desktop", "local"} or row.get("hidden") or row.get("archived"):
             raise APIError("representative_session_required")
-        surface = ctx.session_surface()
+        # on_session_open runs before a turn policy exists. Its public hook
+        # supplies platform directly; tool callers cannot provide this override.
+        surface = native_surface if native_surface is not None else ctx.session_surface()
         if surface not in {"cli", "tui", "desktop"}:
             raise APIError("representative_session_required")
         root = db.get_conversation_root(session_id)
