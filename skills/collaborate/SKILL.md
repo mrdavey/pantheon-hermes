@@ -22,10 +22,21 @@ an uncertain response. A deterministic `conflict` is not a transport timeout:
 check current state and whether that key was already used for a different write;
 do not repeat the same rejected call or infer success from an unrelated receipt.
 
-1. Use `pantheon_doctor`. If the public client ID is missing, use the supported
-   native control in this profile: `hermes config set PANTHEON_OAUTH_CLIENT_ID pantheon-hermes`.
-   Interactive sign-in is human-owned: `hermes auth add pantheon:pantheon`. Hermes
-   handles PKCE and credentials. Never read, copy or write auth.json or tokens.
+1. Before `pantheon_doctor`, sign-in or a restart handoff, verify the public client
+   ID yourself, even if plugin tools are unavailable. In the observed profile run
+   `env -u PANTHEON_OAUTH_CLIENT_ID hermes config get PANTHEON_OAUTH_CLIENT_ID`.
+   If native config reports unset, empty or exactly `pantheon-hermes`, run
+   `hermes config set PANTHEON_OAUTH_CLIENT_ID pantheon-hermes` yourself, then
+   repeat the env -u readback in a fresh command; require exactly `pantheon-hermes`.
+   For a named profile use `hermes --profile <observed-profile>` in every command,
+   including the human's sign-in command. Preserve a different configured value
+   and report a mismatch. Other config failures stop setup. A manifest declaration,
+   shell-only export, earlier claim or `sign_in_required` is not verification.
+   Never read or edit .env directly or ask the human to set this public constant.
+   Check native auth status and reuse valid sign-in. Only after verified config,
+   missing sign-in needs the human's `hermes auth add pantheon:pantheon`.
+   Hermes handles PKCE and credentials; never clear agent-context markers or
+   read, copy or write auth.json or tokens. Run `pantheon_doctor` once tools load.
 2. Call `pantheon_connect` with the supplied invitation and `deliberate: true`.
    If incoming permission is missing, visibly explain that it delivers replies
    while waiting and that the previous setting will be restored after the last
@@ -35,7 +46,18 @@ do not repeat the same rejected call or infer success from an unrelated receipt.
    retry only after the human confirms they enabled it. Unattended runs return
    the permission error without starting an interactive prompt or waiting.
 3. Start the first visible join confirmation with the returned three-line logo
-   and exact clickable chat link, followed by the observed status. If the host
+   and exact clickable chat link, followed by the observed status. If installation,
+   update or setup recovery was needed in this conversation, show the returned
+   `setup_confirmation` once in a short code block after the banner/link:
+
+       \o/ Pantheon setup complete!
+
+   Show it only after a successful connect/resume with a live `connected` or
+   `waiting` state, verified public config and the expected loaded plugin version.
+   Never celebrate an installer launch, pending sign-in, missing incoming permission,
+   stale tools, a failed/terminal connection or an uncertain outcome. Do not repeat
+   it on retries or later invitations that reuse an already-ready installation.
+   Setup success does not mean the shared objective is complete. If the host
    buffers visible output, lead with those after the initial ACK/readiness.
    Read context, history
    (all authorized pages) and `pantheon_receive`. ACK only complete messages you

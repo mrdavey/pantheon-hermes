@@ -248,6 +248,41 @@ class NativeTests(unittest.TestCase):
             self.assertNotIn('PRIVATE',result)
             self.assertIn('invalid_arguments',self.tools.call('pantheon_doctor',{'session':'forged'}))
 
+    def test_auth_recovery_preflights_config_before_human_login(self):
+        # Fresh unsigned hosts can hide the missing ID behind sign_in_required.
+        for code in ('sign_in_required', 'native_auth_unavailable', 'public_client_id_required'):
+            with self.subTest(code=code), patch('hermes.pantheon_native.tools.observe',return_value=SESSION), patch.object(api,'request',side_effect=api.APIError(code)):
+                result=json.loads(self.tools.call('pantheon_doctor',{}))
+            self.assertEqual(result['error'],code)
+            self.assertNotIn('setup_confirmation',result)
+            instruction=result['instruction']
+            self.assertLess(instruction.index('hermes config get'),instruction.index('hermes config set'))
+            self.assertLess(instruction.index('readback in a fresh command'),instruction.index('hermes auth add'))
+            for required in ('Preserve a different configured value', 'other config failures stop setup',
+                             '--profile <observed-profile>', 'human-owned', 'env -u PANTHEON_OAUTH_CLIENT_ID'):
+                self.assertIn(required,instruction)
+
+    def test_setup_confirmation_requires_live_connection_and_permission(self):
+        for status in ('connected', 'waiting', 'disconnected'):
+            self.row(state=status)
+            def request(method,path,body=None):
+                if path=='/identity':return {'grant_id':GRANT}
+                if path.startswith('/operations/'):raise api.APIError('not_accepted',404)
+                if path.endswith('/resume'):return self.row(state=status)
+                raise AssertionError(path)
+            with self.subTest(status=status), patch.object(api,'request',request), patch.object(permissions,'ready',return_value=True), patch.object(self.runtime,'start'):
+                result=self.tools.dispatch('pantheon_resume',{'connection':CONNECTION,'deliberate':True},SESSION)
+            if status in ('connected','waiting'):
+                self.assertEqual(result['setup_confirmation'],r'\o/ Pantheon setup complete!')
+                self.assertIn('show setup_confirmation once',result['next'])
+                self.assertIn('already-ready installation or retry',result['next'])
+            else:self.assertNotIn('setup_confirmation',result)
+        with patch.object(api,'request',return_value={'grant_id':GRANT}), patch.object(permissions,'ready',return_value=False), patch.object(self.runtime,'start') as start:
+            result=self.tools.dispatch('pantheon_resume',{'connection':CONNECTION,'deliberate':True},SESSION)
+        self.assertEqual(result['error'],'incoming_permission_required')
+        self.assertNotIn('setup_confirmation',result)
+        start.assert_not_called()
+
     def test_permission_restoration_does_not_override_later_human_choice(self):
         state.put('permission','prior',{'value':None})
         removed=[]

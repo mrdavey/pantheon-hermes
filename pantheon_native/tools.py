@@ -9,6 +9,7 @@ from . import api, files, permissions, state
 from .session import observe
 
 CATALOG = json.loads((Path(__file__).parent / "catalog.json").read_text())["tools"]
+SETUP_CONFIRMATION = r"\o/ Pantheon setup complete!"
 PRESENTATION = json.loads((Path(__file__).parent / "presentation.json").read_text())
 SCHEMAS = {item["name"]: item for item in CATALOG}
 FINAL_INSTRUCTION = (
@@ -97,10 +98,19 @@ class Tools:
             return json.dumps(self.dispatch(name, args, session), ensure_ascii=False)
         except api.APIError as error:
             result = {"ok": False, "error": error.code}
-            if error.code in {"sign_in_required", "native_auth_unavailable"}:
-                result["instruction"] = "Use native Hermes sign-in for this profile: hermes auth add pantheon:pantheon. This interactive sign-in is human-owned; never read or write auth.json."
-            if error.code == "public_client_id_required":
-                result["instruction"] = "Use native config in this profile: hermes config set PANTHEON_OAUTH_CLIENT_ID pantheon-hermes. Then use native sign-in. This client ID is public."
+            if error.code in {"sign_in_required", "native_auth_unavailable", "public_client_id_required"}:
+                result["instruction"] = (
+                    "Before requesting sign-in, verify the public client ID yourself in this observed profile: "
+                    "env -u PANTHEON_OAUTH_CLIENT_ID hermes config get PANTHEON_OAUTH_CLIENT_ID. "
+                    "If unset, empty or already pantheon-hermes, run hermes config set PANTHEON_OAUTH_CLIENT_ID pantheon-hermes yourself, "
+                    "then repeat the env -u readback in a fresh command and require exactly pantheon-hermes. "
+                    "Preserve a different configured value and report a mismatch; other config failures stop setup. "
+                    "Use hermes --profile <observed-profile> for named profiles in every command. "
+                    "Do not infer configuration from a manifest, shell-only export or sign_in_required. "
+                    "After verified config, check native auth status and reuse valid sign-in. "
+                    "If missing, hermes auth add pantheon:pantheon is human-owned. "
+                    "Never read or edit .env or auth.json, copy tokens or clear agent-context markers."
+                )
             if error.code in {"file_path_not_allowed", "session_workspace_required"}:
                 result["instruction"] = "Uploads and site bundles require nonsecret files in this session's workspace. Downloads and durable ACKs require Pantheon's profile downloads directory, reported by pantheon_doctor. Never copy credentials, change the workspace, or use another tool to bypass these restrictions."
             return json.dumps(result)
@@ -117,7 +127,7 @@ class Tools:
                     "connections": sum(row["grant"] == grant and row["session"] == session and row["state"] != "disconnected" for row in local),
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
                     "downloads_directory": str(files.download_root()),
-                    "version": "1.0.8"}
+                    "version": "1.0.9"}
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
@@ -151,9 +161,9 @@ class Tools:
                           "deadline": row["deadline"], "state": row["state"]}
             if row["state"] not in {"connected", "waiting"}:
                 return {**connection, "instruction": "Report the observed connection state with the exact chat link. A recovered operation receipt does not establish a live connection."}
-            return {**connection,
+            return {**connection, "setup_confirmation": SETUP_CONFIRMATION,
                     "instruction": PRESENTATION["instruction"], "banner": PRESENTATION["banner"],
-                    "next": "Read context, complete authorized history and pending messages; explicitly ACK what you read and respond to readiness. Check pantheon_status for this connection. While the chat is waiting, end your turn without planning or doing the objective. When active with peers, negotiate roles and agree the definition of done before substantive work."}
+                    "next": "If you installed, updated or repaired setup in this conversation, show setup_confirmation once after the banner and chat link. Do not repeat it for an already-ready installation or retry. Read context, complete authorized history and pending messages; explicitly ACK what you read and respond to readiness. Check pantheon_status for this connection. While the chat is waiting, end your turn without planning or doing the objective. When active with peers, negotiate roles and agree the definition of done before substantive work."}
         if name == "pantheon_status" and "connection" not in args:
             grant = identity()
             # Recover accepted joins before listing, without asking for invitation replay.

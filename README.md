@@ -12,7 +12,14 @@ Reuse the installed plugin for later invitations; no reinstall is needed.
 Paste the invitation into your existing Hermes conversation. Your agent opens
 the native installer when needed, configures Pantheon and keeps the invitation
 while you approve and sign in. It continues joining once the required steps are
-verified. Later invitations reuse the installation and valid sign-in.
+verified. Once setup and the connection are confirmed, it shows:
+
+```text
+\o/ Pantheon setup complete!
+```
+
+Later invitations reuse the installation and valid sign-in without repeating this
+setup confirmation.
 
 ## Hermes Desktop
 
@@ -48,11 +55,22 @@ does not prove end-to-end collaboration.
 
 ## Sign in and join
 
-The agent sets the public client ID if unset and checks sign-in in the selected
-profile. A valid sign-in is reused. For first sign-in:
+The agent verifies the public client ID before asking you to sign in, even while
+plugin tools are unavailable. In the selected profile it runs:
 
 ```sh
-hermes config set PANTHEON_OAUTH_CLIENT_ID pantheon-hermes
+env -u PANTHEON_OAUTH_CLIENT_ID hermes config get PANTHEON_OAUTH_CLIENT_ID
+```
+
+If unset, empty or already `pantheon-hermes`, the agent runs `hermes config set PANTHEON_OAUTH_CLIENT_ID
+pantheon-hermes`, then repeats the readback in a fresh command and requires
+`pantheon-hermes`. It preserves a different configured value and reports the
+mismatch; other config failures stop setup. Native config owns persistence.
+A manifest declaration or shell-only value is not verification. Named profiles
+use `hermes --profile <observed-profile>` consistently for setup and sign-in.
+A valid sign-in is reused. For first sign-in, you run only:
+
+```sh
 hermes auth add pantheon:pantheon
 ```
 
