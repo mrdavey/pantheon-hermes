@@ -238,6 +238,76 @@ class NativeTests(unittest.TestCase):
             self.assertEqual([name for name,_ in calls],['pantheon_receive'])
             self.tools.dispatch('pantheon_ack_ready',{'connection':CONNECTION,'key':'read','message_ids':['probe'],'text':'probe','objective_version':2,'context_version':3},SESSION)
         self.assertEqual(calls[-1][1]['epoch'],3);self.assertEqual(calls[-1][1]['config'],7)
+
+    def test_usage_report_preserves_exact_attributable_totals(self):
+        self.row()
+        args = {'connection': CONNECTION, 'op': 'report', 'key': 'usage-checkpoint',
+                'target': 'waiting', 'text': 'Available for review',
+                'usage': {'input_tokens': 1200, 'output_tokens': 300}}
+        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool') as tool:
+            tool.side_effect = [{'epoch': 3, 'config': 7}, {'id': 'report'}]
+            from hermes.pantheon_native.tools import validate
+            validate('pantheon_command', args)
+            self.tools.dispatch('pantheon_command', args, SESSION)
+            self.assertEqual(tool.call_args.args[3], {**args, 'epoch': 3, 'config': 7})
+
+    def test_invalid_usage_fails_before_host_or_network(self):
+        for usage in ({}, {'input_tokens': 1}, {'input_tokens': -1, 'output_tokens': 0},
+                      {'input_tokens': True, 'output_tokens': 0}, {'input_tokens': 1.5, 'output_tokens': 0},
+                      {'input_tokens': 10**12+1, 'output_tokens': 0},
+                      {'input_tokens': 1, 'output_tokens': 0, 'private': 'data'}):
+            with self.subTest(usage=usage), patch.object(api, 'request') as request, patch.object(api, 'tool') as tool:
+                result = json.loads(self.tools.call('pantheon_command', {'connection': CONNECTION,
+                    'op': 'report', 'key': 'usage', 'target': 'waiting', 'usage': usage}))
+                self.assertEqual(result['error'], 'invalid_arguments')
+                request.assert_not_called(); tool.assert_not_called()
+
+    def test_confirm_invalid_arguments_fail_before_host_or_network(self):
+        base = {'connection': CONNECTION, 'op': 'confirm', 'key': 'confirm-v2',
+                'target': 'definition-id', 'expected': 2, 'text': 'server-digest'}
+        cases = [({'source': 'agree'}, 'confirm_source_invalid'),
+                 ({'source': 'definition'}, 'confirm_source_invalid'),
+                 ({'expected': 0}, 'confirm_fields_required'),
+                 ({'target': ''}, 'confirm_fields_required'),
+                 ({'text': ' '}, 'confirm_fields_required'),
+                 ({'source': 'disagree', 'evidence': ' '}, 'confirm_evidence_required')]
+        for changes, code in cases:
+            with self.subTest(changes=changes), patch.object(api, 'request') as request, patch.object(api, 'tool') as tool, patch('hermes.pantheon_native.tools.observe') as observe_session:
+                result = json.loads(self.tools.call('pantheon_command', {**base, **changes}))
+                self.assertEqual(result['error'], code)
+                self.assertIn('source=agree is invalid', result['instruction'])
+                self.assertIn('digest verbatim', result['instruction'])
+                request.assert_not_called(); tool.assert_not_called(); observe_session.assert_not_called()
+
+    def test_confirm_preserves_reviewed_values_and_never_retries(self):
+        self.row()
+        base = {'connection': CONNECTION, 'op': 'confirm', 'key': 'confirm-v2',
+                'target': 'reviewed-id', 'expected': 2, 'text': 'reviewed-digest'}
+        for extra in ({}, {'source': ''}, {'source': 'disagree', 'evidence': 'Missing evidence; check it'}):
+            with self.subTest(extra=extra), patch('hermes.pantheon_native.tools.observe', return_value=SESSION), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=[{'epoch': 3, 'config': 7}, {'id': 'receipt'}]) as tool, patch.object(self.runtime, 'start'):
+                result = json.loads(self.tools.call('pantheon_command', {**base, **extra}))
+                self.assertEqual(result['id'], 'receipt')
+                self.assertEqual(tool.call_count, 2)
+                self.assertEqual(tool.call_args.args[3], {**base, **extra, 'epoch': 3, 'config': 7, 'completion_protocol': 'pantheon.definition.v1'})
+        for code in ('invalid_request', 'conflict', 'outcome_unknown'):
+            with self.subTest(code=code), patch('hermes.pantheon_native.tools.observe', return_value=SESSION), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=[{'epoch': 3, 'config': 7}, api.APIError(code)]) as tool:
+                result = json.loads(self.tools.call('pantheon_command', base))
+                self.assertEqual(result['error'], code)
+                self.assertEqual(tool.call_count, 2)
+                if code != 'outcome_unknown':
+                    self.assertIn('digest verbatim', result['instruction'])
+                    self.assertIn('Do not blindly retry', result['instruction'])
+                else:
+                    self.assertNotIn('instruction', result)
+
+    def test_report_conflict_explains_definition_gate(self):
+        self.row()
+        with patch('hermes.pantheon_native.tools.observe', return_value=SESSION), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=[{'epoch': 3, 'config': 7}, api.APIError('conflict')]) as tool:
+            result = json.loads(self.tools.call('pantheon_command', {'connection': CONNECTION, 'op': 'report', 'key': 'working', 'target': 'working'}))
+            self.assertEqual(result['error'], 'conflict')
+            self.assertIn('Report waiting', result['instruction'])
+            self.assertIn('key was already used', result['instruction'])
+            self.assertEqual(tool.call_count, 2)
     def test_wake_claim_is_bounded_and_uncertain_not_replayed(self):
         self.row()
         self.assertTrue(state.claim_wake(CONNECTION,'first'))
@@ -380,14 +450,48 @@ class NativeTests(unittest.TestCase):
                 result=self.tools.dispatch('pantheon_resume',{'connection':CONNECTION,'deliberate':True},SESSION)
             if status in ('connected','waiting'):
                 self.assertEqual(result['setup_confirmation'],r'\o/ Pantheon setup complete!')
-                self.assertIn('show setup_confirmation once',result['next'])
-                self.assertIn('already-ready installation or retry',result['next'])
-            else:self.assertNotIn('setup_confirmation',result)
+                self.assertIn('show setup_confirmation once',result['welcome_instruction'])
+                self.assertIn('already-ready installation or retry',result['welcome_instruction'])
+                self.assertIn('Follow welcome_instruction',result['next'])
+                self.assertIn(result['banner'], result['setup_message'])
+                self.assertIn(f"[Open Pantheon chat]({result['chat_url']})", result['setup_message'])
+                self.assertIn(result['setup_confirmation'], result['setup_message'])
+            else:
+                self.assertNotIn('setup_confirmation',result)
+                self.assertNotIn('setup_message',result)
         with patch.object(api,'request',return_value={'grant_id':GRANT}), patch.object(permissions,'ready',return_value=False), patch.object(self.runtime,'start') as start:
             result=self.tools.dispatch('pantheon_resume',{'connection':CONNECTION,'deliberate':True},SESSION)
         self.assertEqual(result['error'],'incoming_permission_required')
         self.assertNotIn('setup_confirmation',result)
+        self.assertNotIn('setup_message',result)
         start.assert_not_called()
+
+    def test_permission_setup_survives_buffered_join_through_both_readiness_paths(self):
+        self.row()
+        def request(method, path, body=None):
+            if path == '/identity': return {'grant_id': GRANT}
+            if path.startswith('/operations/'): raise api.APIError('not_accepted', 404)
+            if path == '/connections/join': return self.row()
+            raise AssertionError(path)
+        args = {'link': 'https://pantheon.talk/join#invite=' + 'A' * 43, 'deliberate': True}
+        with patch.object(api, 'request', side_effect=request), patch.object(self.runtime, 'start'), patch.object(permissions, 'ready', side_effect=[False, True]):
+            denied = self.tools.dispatch('pantheon_connect', args, SESSION)
+            self.assertNotIn('setup_message', denied)
+            joined = self.tools.dispatch('pantheon_connect', args, SESSION)
+        for name, args in [('pantheon_ack_ready', {'message_ids': ['probe'], 'text': 'probe', 'objective_version': 1, 'context_version': 1}),
+                           ('pantheon_command', {'op': 'ready', 'text': 'probe'})]:
+            with self.subTest(name=name), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=[{'epoch': 1, 'config': 1}, {'status': 'ready'}]), patch.object(self.runtime, 'start'):
+                ready = self.tools.dispatch(name, {'connection': CONNECTION, 'key': 'ready', **args}, SESSION)
+            self.assertEqual(ready['setup_message'], joined['setup_message'])
+            self.assertEqual(ready['welcome_instruction'], joined['welcome_instruction'])
+            self.assertIn('human enabling incoming replies', ready['welcome_instruction'])
+            self.assertIn('visible assistant text', ready['welcome_instruction'])
+            self.assertIn('If the banner/link were already shown', ready['welcome_instruction'])
+            self.assertIn('ordinary join with no setup work', ready['welcome_instruction'])
+            self.assertEqual(ready['setup_message'].count('Pantheon setup complete!'), 1)
+            self.assertEqual(len(ready['banner'].splitlines()), 3)
+            self.assertLess(ready['setup_message'].index(ready['banner']), ready['setup_message'].index(ready['chat_url']))
+            self.assertLess(ready['setup_message'].index(ready['chat_url']), ready['setup_message'].index(ready['setup_confirmation']))
 
     def test_permission_restoration_does_not_override_later_human_choice(self):
         state.put('permission','prior',{'value':None})
@@ -475,6 +579,8 @@ class NativeTests(unittest.TestCase):
                 self.assertIn("show them now", result["welcome_instruction"])
             else:
                 self.assertIn("start this visible response with the same three-line banner", result["instruction"])
+                self.assertNotIn('setup_message', result)
+                self.assertNotIn('setup_confirmation', result)
         self.assertEqual(len(result['banner'].splitlines()),3)
 
     def test_read_and_write_receipts_keep_exact_bound_url(self):

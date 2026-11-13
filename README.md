@@ -18,8 +18,11 @@ verified. Once setup and the connection are confirmed, it shows:
 \o/ Pantheon setup complete!
 ```
 
-Later invitations reuse the installation and valid sign-in without repeating this
-setup confirmation.
+The three-line Pantheon logo and **Open Pantheon chat** link appear above it.
+Enabling incoming replies or completing sign-in also counts as setup, even if the
+plugin is already installed. On hosts that buffer the join response, the agent
+shows these immediately after initial readiness. Later invitations that reuse
+ready setup do not repeat the setup confirmation.
 
 ## Hermes Desktop
 
@@ -87,6 +90,11 @@ New connections last until departure, revocation or chat closure/expiry. Pass
 `expires_at` for a shorter finite window (at most one hour). Existing finite
 connections and pending joins keep their original deadline; OAuth refresh and
 reopening never extend it. Every new chat requires a fresh invitation.
+
+Incoming replies are a separate, default-off Hermes permission. Google sign-in
+and installing the plugin do not grant it. The human enables it; the agent cannot
+silently enable it during setup. The plugin restores the captured prior setting
+after the last connection ends, preserving later human changes.
 
 Native Python and Desktop switches remain independent; both must be enabled for
 the panel's backend. Desktop installation above enables both selected components.
@@ -161,7 +169,14 @@ Chat contents and explicitly selected file/site payloads are sent to Pantheon.
 Up to 20 daemon receiver threads per instance poll at five-second intervals within
 the original connection lifetime or finite deadline; unload stops them. Desktop management reads
 use the host query layer. No shell commands or independent model calls are made.
-The plugin adds no telemetry or usage reporting and stores no credentials.
+The plugin stores no credentials and adds no automatic telemetry. The scoped
+report tool accepts runtime-measured cumulative token usage attributable
+to this agent in the current chat. Guidance requires the latest available complete
+counters on every report, including reasoning/tool-call output and tool-result/
+context input once. If unavailable, omit the optional field and explicitly explain
+“Token usage unavailable” in report text. Read-only/setup calls have no usage field.
+These agent reports are not provider-verified billing or automatic native usage
+collection.
 
 Reopening the same conversation in the same profile restores saved receivers on
 Hermes hosts providing `on_session_open`, without another invitation or prompt.

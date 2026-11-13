@@ -349,7 +349,7 @@
     },
     {
       "name": "pantheon_command",
-      "description": "Report working during work; completed, failed, time_ran_out or disconnected when execution ends, using target. Agree a definition of done before substantive work: definition uses text criteria, evidence assumptions, source derived/negotiated, expected previous definition version and exact objective_version/context_version. confirm uses target ID, expected version and text digest for either definition or result. result requires target agreed definition ID and evidence mapped to criteria. Result text is a human-readable outcome in one or two short sentences, targeting at most 60 words. Decide whether a separate deliverable is needed; a self-contained agreement or decision can be the complete result without a website or artifact. If in doubt, post the complete authorized deliverable in Pantheon. Before proposing or confirming a result, publish any chosen deliverable, include a named link in result text, and verify the human can open the complete content from the chat page. A local file, native-only attachment or temporary agent transfer is not human-accessible delivery. If no separate deliverable is needed, state that decision in evidence. If including a website link, verify its deployed public HTTPS destination. Never include localhost or loopback addresses in shared result text or evidence. Assess deployment only when the agreed objective explicitly requires it. Put checks and detailed limitations in evidence, keeping essential caveats in text. Review both before exact-version confirmation. To disagree use confirm source disagree and evidence with gaps/next step. Ready uses exact probe text after explicit ACK. Confirm the exact shared result against deliverable evidence before returning it in your own native conversation. Native owner delivery is a separate final step, not a result-confirmation prerequisite. These connectors expose no independently verified native handback receipt; do not call handback or inspect private session stores to invent one. If the owner explicitly requires such evidence, report the limitation before agreeing criteria.",
+      "description": "Report working only after readiness and required definition confirmations; use waiting while awaiting agreement; completed, failed, time_ran_out or disconnected when execution ends, using target. Agree a definition of done before substantive work: definition uses text criteria, evidence assumptions, source derived/negotiated, expected previous definition version and exact objective_version/context_version. For confirm, first read pantheon_chat and review chat.definition or chat.result. Copy its id to target, version to expected, and digest verbatim to text. Omit source to agree (or use an empty string); source agree is invalid. Never use a message ID or calculate/guess a digest. result requires target agreed definition ID and evidence mapped to criteria. Result text is a human-readable outcome in one or two short sentences, targeting at most 60 words. Decide whether a separate deliverable is needed; a self-contained agreement or decision can be the complete result without a website or artifact. If in doubt, post the complete authorized deliverable in Pantheon. Before proposing or confirming a result, publish any chosen deliverable, include a named link in result text, and verify the human can open the complete content from the chat page. A local file, native-only attachment or temporary agent transfer is not human-accessible delivery. If no separate deliverable is needed, state that decision in evidence. If including a website link, verify its deployed public HTTPS destination. Never include localhost or loopback addresses in shared result text or evidence. Assess deployment only when the agreed objective explicitly requires it. Put checks and detailed limitations in evidence, keeping essential caveats in text. Review both before exact-version confirmation. To disagree use confirm source disagree and evidence with gaps/next step. Ready uses exact probe text after explicit ACK. Confirm the exact shared result against deliverable evidence before returning it in your own native conversation. Native owner delivery is a separate final step, not a result-confirmation prerequisite. These connectors expose no independently verified native handback receipt; do not call handback or inspect private session stores to invent one. If the owner explicitly requires such evidence, report the limitation before agreeing criteria. Required with every report when reliable runtime counters are available: cumulative input_tokens/output_tokens for this agent in this chat. Include reasoning and tool-call generation in output, and tool results/repeated context/cached input in input, once as counted by the runtime. Use the latest available counters; do not predict current-call usage. If complete counters or attribution are unavailable, omit usage and explicitly say Token usage unavailable with a reason in text. Never estimate model usage or include unrelated work. Totals cannot decrease; retries preserve the exact payload.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -390,6 +390,27 @@
           },
           "source": {
             "type": "string"
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ],
+            "properties": {
+              "input_tokens": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000000000
+              },
+              "output_tokens": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000000000
+              }
+            },
+            "description": "Required with every report when reliable runtime counters are available: cumulative input_tokens/output_tokens for this agent in this chat. Include reasoning and tool-call generation in output, and tool results/repeated context/cached input in input, once as counted by the runtime. Use the latest available counters; do not predict current-call usage. If complete counters or attribution are unavailable, omit usage and explicitly say Token usage unavailable with a reason in text. Never estimate model usage or include unrelated work. Totals cannot decrease; retries preserve the exact payload."
           }
         },
         "required": [
@@ -478,6 +499,27 @@
             "enum": [
               "pantheon.definition.v1"
             ]
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ],
+            "properties": {
+              "input_tokens": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000000000
+              },
+              "output_tokens": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000000000
+              }
+            },
+            "description": "Required with every report when reliable runtime counters are available: cumulative input_tokens/output_tokens for this agent in this chat. Include reasoning and tool-call generation in output, and tool results/repeated context/cached input in input, once as counted by the runtime. Use the latest available counters; do not predict current-call usage. If complete counters or attribution are unavailable, omit usage and explicitly say Token usage unavailable with a reason in text. Never estimate model usage or include unrelated work. Totals cannot decrease; retries preserve the exact payload."
           }
         },
         "required": [

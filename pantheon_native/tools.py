@@ -18,6 +18,41 @@ FINAL_INSTRUCTION = (
     "Use returned incoming_replies values when present; do not infer prior settings from earlier conversation turns. "
     "The plugin manages restoration after the last connection; do not change it yourself or add a config check just to compose the response."
 )
+CONFIRM_INSTRUCTION = (
+    "Read pantheon_chat and review chat.definition or chat.result. Copy that object's id to target, "
+    "version to expected (the version being confirmed), and digest verbatim to text. "
+    "Omit source to agree, or use an empty string; source=agree is invalid. "
+    "To disagree use source=disagree and nonempty evidence describing gaps and the next step. "
+    "Never use a history message ID, calculate/guess digests or inspect plugin source. "
+    "Use a new key for corrected arguments; preserve the exact key and payload only for an identical uncertain retry."
+)
+CONFIRM_ERRORS = {
+    "confirm_source_invalid": "source must be omitted, empty, or disagree.",
+    "confirm_fields_required": "target, positive expected, and nonempty text are required.",
+    "confirm_evidence_required": "Disagreement requires nonempty evidence.",
+}
+
+
+def welcome(chat_url):
+    """Keep the complete visible setup response available through readiness."""
+    return {
+        "banner": PRESENTATION["banner"],
+        "setup_confirmation": SETUP_CONFIRMATION,
+        "setup_message": (
+            f"```text\n{PRESENTATION['banner']}\n```\n\n"
+            f"[Open Pantheon chat]({chat_url})\n\n```text\n{SETUP_CONFIRMATION}\n```"
+        ),
+        "welcome_instruction": (
+            "If this connection's join banner and link have not been shown, show them now before work or waiting. "
+            "Installation, update, repairing public client-ID configuration, OAuth sign-in, or the human enabling incoming replies "
+            "in this conversation each counts as setup, even when the plugin was already installed. Checking or reusing ready settings alone is not setup. "
+            "After that setup and a successful live join, show setup_confirmation once: use setup_message verbatim "
+            "as visible assistant text, then add the observed status. Do not leave it only in tool output or hidden reasoning. "
+            "If the banner/link were already shown, show only the missing setup_confirmation in a code block. "
+            "Do not repeat a message already shown, or celebrate an already-ready installation or retry with no setup work. "
+            "For an ordinary join with no setup work, show just the banner and exact chat link, then observed status."
+        ),
+    }
 
 
 def validate(name, args):
@@ -29,8 +64,11 @@ def validate(name, args):
     for key, value in args.items():
         spec = schema["properties"][key]
         kind = spec["type"]
-        expected = {"string": str, "integer": int, "boolean": bool, "array": list}[kind]
+        expected = {"string": str, "integer": int, "boolean": bool, "array": list, "object": dict}[kind]
         if not isinstance(value, expected) or (kind == "integer" and isinstance(value, bool)):
+            raise api.APIError("invalid_arguments")
+        if key == "usage" and (args.get("op") != "report" or set(value) != {"input_tokens", "output_tokens"}
+                               or any(type(count) is not int or not 0 <= count <= 10**12 for count in value.values())):
             raise api.APIError("invalid_arguments")
         if "enum" in spec and value not in spec["enum"]:
             raise api.APIError("invalid_arguments")
@@ -38,6 +76,13 @@ def validate(name, args):
             raise api.APIError("invalid_arguments")
         if kind == "array" and any(not isinstance(item, str) for item in value):
             raise api.APIError("invalid_arguments")
+    if name == "pantheon_command" and args.get("op") == "confirm":
+        if args.get("source", "") not in {"", "disagree"}:
+            raise api.APIError("confirm_source_invalid")
+        if not args.get("target", "").strip() or args.get("expected", 0) < 1 or not args.get("text", "").strip():
+            raise api.APIError("confirm_fields_required")
+        if args.get("source") == "disagree" and not args.get("evidence", "").strip():
+            raise api.APIError("confirm_evidence_required")
 
 
 def invitation(link):
@@ -100,6 +145,17 @@ class Tools:
             return json.dumps(self.dispatch(name, args, session), ensure_ascii=False)
         except api.APIError as error:
             result = {"ok": False, "error": error.code}
+            if error.code in CONFIRM_ERRORS:
+                result["instruction"] = CONFIRM_ERRORS[error.code] + " " + CONFIRM_INSTRUCTION
+            elif name == "pantheon_command" and error.code in {"invalid_arguments", "invalid_request", "conflict"}:
+                result["instruction"] = (
+                    "Do not blindly retry. Read pantheon_chat; check current readiness, definition/result agreement, "
+                    "versions and whether the key was already used for a different payload. "
+                    "Report waiting while required definition confirmations are outstanding; working requires readiness "
+                    "and definition agreement. Use a new key for a corrected operation, never to replay an uncertain write."
+                )
+                if isinstance(args, dict) and args.get("op") == "confirm":
+                    result["instruction"] += " " + CONFIRM_INSTRUCTION
             if error.code in {"sign_in_required", "native_auth_unavailable", "public_client_id_required"}:
                 result["instruction"] = (
                     "Before requesting sign-in, verify the public client ID yourself in this observed profile: "
@@ -129,7 +185,7 @@ class Tools:
                     "connections": sum(row["grant"] == grant and row["session"] == session and row["state"] != "disconnected" for row in local),
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
                     "downloads_directory": str(files.download_root()),
-                    "version": "1.0.10"}
+                    "version": "1.0.11"}
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
@@ -171,9 +227,9 @@ class Tools:
                 connection['runtime_policy'] = row['runtime_policy']
             if row["state"] not in {"connected", "waiting"}:
                 return {**connection, "instruction": "Report the observed connection state with the exact chat link. A recovered operation receipt does not establish a live connection."}
-            return {**connection, "setup_confirmation": SETUP_CONFIRMATION,
-                    "instruction": PRESENTATION["instruction"], "banner": PRESENTATION["banner"],
-                    "next": "If you installed, updated or repaired setup in this conversation, show setup_confirmation once after the banner and chat link. Do not repeat it for an already-ready installation or retry. Read context, complete authorized history and pending messages; explicitly ACK what you read and respond to readiness. Check pantheon_status for this connection. While the chat is waiting, end your turn without planning or doing the objective. When active with peers, negotiate roles and agree the definition of done before substantive work."}
+            return {**connection, **welcome(row["url"]),
+                    "instruction": PRESENTATION["instruction"],
+                    "next": "Follow welcome_instruction before work or waiting; if the host buffers visible output, do so immediately after initial ACK/readiness. Read context, complete authorized history and pending messages; explicitly ACK what you read and respond to readiness. Check pantheon_status for this connection. While the chat is waiting, end your turn without planning or doing the objective. When active with peers, negotiate roles and agree the definition of done before substantive work."}
         if name == "pantheon_status" and "connection" not in args:
             grant = identity()
             # Recover accepted joins before listing, without asking for invitation replay.
@@ -238,6 +294,5 @@ class Tools:
             # model need not reconstruct it from an older conversation turn.
             result = {**result, "chat_url": row["url"]}
             if name == "pantheon_ack_ready" or (name == "pantheon_command" and values.get("op") == "ready"):
-                result["banner"] = PRESENTATION["banner"]
-                result["welcome_instruction"] = "If this connection's join banner and link have not been shown, show them now before work or waiting: the banner first, then the exact clickable Open Pantheon chat link outside the code block, then the observed status."
+                result.update(welcome(row["url"]))
         return result
