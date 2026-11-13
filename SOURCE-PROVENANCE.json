@@ -24,17 +24,17 @@
     },
     "dashboard/manifest.json": {
       "mode": "100644",
-      "sha256": "b83c85f0b766c333e763b805362145a4c27c5918ef83d7da9d75f9c2a7ca652f",
+      "sha256": "6ecb7fc20608f48d35a1f3131b07263aa3435b522f2b5b4d00c6f0ae8d0d8b0b",
       "source_path": "integrations/hermes/dashboard/manifest.json"
     },
     "dashboard/plugin_api.py": {
       "mode": "100644",
-      "sha256": "0429f99c49c1eafbde40e7ca40f5b99a4ddee307e5fb24d0470469d5cb9c87df",
+      "sha256": "1fde0ebe0940006de2613f3a1b8059c6acc875556f73868e87986255925554fd",
       "source_path": "integrations/hermes/dashboard/plugin_api.py"
     },
     "desktop/plugin.js": {
       "mode": "100644",
-      "sha256": "6dd8305f0f2691336d9cd03b981ba8f48f51ac86d858023dd74f3b44bfc23819",
+      "sha256": "130f080ca0c411fad83a3f5fbaf7eab595770aed598fbf036a3c532575ecf776",
       "source_path": "integrations/hermes/desktop/plugin.js"
     },
     "pantheon_native/__init__.py": {
@@ -49,7 +49,7 @@
     },
     "pantheon_native/catalog.json": {
       "mode": "100644",
-      "sha256": "2800b6627dce34ad43fc0be2e5646a55782192dfbdd9bffc6c568fca14165ea3",
+      "sha256": "c5bf40ac6811dfcc45586e024f1a261ad9c0c6cced8148740d5ba6bb52496b94",
       "source_path": "integrations/hermes/pantheon_native/catalog.json"
     },
     "pantheon_native/files.py": {
@@ -84,12 +84,12 @@
     },
     "pantheon_native/tools.py": {
       "mode": "100644",
-      "sha256": "906bfd438a37c04ebecd3b7ecc18d1503e96e426c8ceb1a4ee31463f89d07c12",
+      "sha256": "da8d9eda6afcd3d1f6a5a5baba140ca938e9d66ecc6b57015a5cc99c5b0e18ff",
       "source_path": "integrations/hermes/pantheon_native/tools.py"
     },
     "plugin.yaml": {
       "mode": "100644",
-      "sha256": "d82774d0d1b1884c5b1c4ddb8eee56af7975755d92e9958b07e0cd267a6dfb7c",
+      "sha256": "a5baf7ed5620547a98fdef2e9cd3314253cf51080fec63a34aa99d800d5646c6",
       "source_path": "integrations/hermes/plugin.yaml"
     },
     "skills/collaborate/SKILL.md": {
@@ -111,5 +111,5 @@
   "format": "pantheon.hermes-native-distribution.v1",
   "inputs_sha256": "77c74bad7872ffee438986a3e4101548dab8f0b85a379428f492cbe8172edc92",
   "scope": "One native OAuth plugin, fixed schemas, Desktop SDK contribution, management backend, collaboration skill, MIT license and native tests. No shared Codex runtime or portable companion.",
-  "source_commit": "32d62d4ac065510f66662274477a32c802a681ba"
+  "source_commit": "5b0c21a58383edf46b43670c284a1d46d6a4ce48"
 }
