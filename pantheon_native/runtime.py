@@ -104,7 +104,9 @@ class Runtime:
                     self.disconnect(row)
                     continue
                 # The scoped tool checks the complete session, not just account ownership.
-                api.tool(row['id'], session, 'pantheon_chat_state', {'connection': row['id']})
+                status = api.tool(row['id'], session, 'pantheon_chat_state', {'connection': row['id']})
+                if isinstance(status, dict):
+                    state.update('connection', row['id'], {'opening': status.get('opening')})
                 restored = state.restore_receiver(row['id'], session, grant)
                 if restored:
                     self.start(restored)
@@ -126,7 +128,26 @@ class Runtime:
             return
         if out.get("state") == "disconnected":
             state.update("connection", row["id"], {"state": "disconnected"})
+            state.cancel_questions(row["id"])
             permissions.restore()
+
+    def opening_due(self, row, now):
+        opening = row.get('opening')
+        if row.get('coordination_unavailable') or not opening or opening.get('message_id'):
+            return None
+        # Only authoritative current state can wake a fallback contender. A new
+        # episode, accepted opening or closed chat cancels the old timer.
+        status = api.tool(row['id'], row['session'], 'pantheon_chat_state', {'connection': row['id']})
+        current = status.get('opening')
+        state.update('connection', row['id'], {'opening': current})
+        if (status.get('state') != 'active' or not current or current.get('message_id')
+                or current.get('episode') != opening.get('episode') or current.get('config') != opening.get('config')):
+            return None
+        try:
+            due = datetime.fromisoformat(current['deadline'].replace('Z', '+00:00')).timestamp()
+        except (KeyError, ValueError, TypeError):
+            return None
+        return current['episode'] if now >= due else None
 
     def run(self, original, stop):
         import time
@@ -155,14 +176,18 @@ class Runtime:
                         if row is None:
                             return
                     ids = [item["message"]["id"] for item in pending]
-                    if ids and not stop.is_set() and time.time() < deadline(row):
-                        signature = state.digest(ids)
+                    episode = self.opening_due(row, time.time()) if not ids else None
+                    if (ids or episode) and not stop.is_set() and time.time() < deadline(row):
+                        signature = state.digest(ids if ids else ["opening", episode])
                         if state.claim_wake(row["id"], signature):
-                            accepted = self.ctx.inject_message(
-                                "Pantheon update for connection " + row["id"] + ". Use pantheon_receive to read it. "
+                            notice = (
+                                ("Pantheon update for connection " + row["id"] + ". Use pantheon_checkpoint to read it. " if ids else
+                                 "Pantheon opening deadline for connection " + row["id"] + ". Read pantheon_checkpoint, explicitly ACK consumed messages, then check pantheon_opening before any opening post. ") +
+                                "If coordination is unavailable during recovery, use pantheon_receive and pantheon_chat, then withdraw; do not loop on unsupported tools. "
                                 "Do not ACK until you read the returned messages. If stale, finish silently. "
-                                "For any visible status, copy this exact chat URL: " + row["url"],
-                                session_key=row["session"]["route"])
+                                "For any visible status, copy this exact chat URL: " + row["url"])
+                            state.update("connection", row["id"], {"wake_text_digest": state.digest(notice)})
+                            accepted = self.ctx.inject_message(notice, session_key=row["session"]["route"])
                             state.update("connection", row["id"], {"wake_state": "accepted" if accepted else "unavailable"})
                 except api.APIError as error:
                     if error.code in {"access_unavailable", "sign_in_required", "native_auth_unavailable"}:

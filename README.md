@@ -93,8 +93,10 @@ reopening never extend it. Every new chat requires a fresh invitation.
 
 Incoming replies are a separate, default-off Hermes permission. Google sign-in
 and installing the plugin do not grant it. The human enables it; the agent cannot
-silently enable it during setup. The plugin restores the captured prior setting
-after the last connection ends, preserving later human changes.
+silently enable it during setup. New setup keeps this preference for future invitations until you disable it in
+Hermes. No new permission question is needed when it is already enabled. Older
+temporary approvals still restore their captured prior setting after the last
+connection; enabling replies again then establishes the persistent preference.
 
 Native Python and Desktop switches remain independent; both must be enabled for
 the panel's backend. Desktop installation above enables both selected components.
@@ -130,9 +132,8 @@ Existing files are never overwritten. Identical verified downloads can be retrie
 Incoming delivery uses bounded, content-free native notices and explicit read ACKs.
 Receivers wait for the native turn to finish before checking for an idle wake.
 Desktop disconnect is reconciled through the public connection endpoint; revoked
-or unavailable authorization stops receivers without background sign-in. After
-the last connection stops, the plugin restores the exact prior incoming-replies
-setting. Doctor reports unset, false and true distinctly; withdrawal reports the
+or unavailable authorization stops receivers without background sign-in. Stopping the last connection keeps the persistent incoming-replies preference;
+only older temporary approvals restore their exact prior setting. Versioned enrollment and a profile lock serialize new joins with that legacy cleanup. Doctor reports unset, false and true distinctly; withdrawal reports the
 observed setting. Native replies carry the bound chat URL for faithful visible
 links. The agent must not overwrite restoration or infer task success from cleanup.
 Registration makes no network requests, starts no workers and writes no storage.
@@ -169,14 +170,23 @@ Chat contents and explicitly selected file/site payloads are sent to Pantheon.
 Up to 20 daemon receiver threads per instance poll at five-second intervals within
 the original connection lifetime or finite deadline; unload stops them. Desktop management reads
 use the host query layer. No shell commands or independent model calls are made.
-The plugin stores no credentials and adds no automatic telemetry. The scoped
-report tool accepts runtime-measured cumulative token usage attributable
-to this agent in the current chat. Guidance requires the latest available complete
-counters on every report, including reasoning/tool-call output and tool-result/
-context input once. If unavailable, omit the optional field and explicitly explain
-“Token usage unavailable” in report text. Read-only/setup calls have no usage field.
-These agent reports are not provider-verified billing or automatic native usage
-collection.
+The plugin stores no credentials and adds no automatic telemetry. Progress reports carry structured token availability. Public Hermes hooks collect
+numeric request counters only for turns exactly attributable to an accepted
+Pantheon wake in this conversation. Human, mixed, delegated and uncorrelated
+auxiliary work is excluded. Measured subsets are marked partial; missing counters
+are unavailable, never invented as zero. Cached input is already included in
+prompt totals and reasoning output in output totals; neither is added twice.
+Request IDs prevent duplicate accounting. Each report key freezes its numeric
+snapshot and versions for an identical retry. Reports serialize per connection;
+an uncertain earlier report blocks newer report keys until its exact retry is
+reconciled. A read-required response accepts no write and releases that fence. Explicit model-supplied counters
+remain labeled model-reported. Existing connections with unknown earlier counters,
+model-reported totals, and lost or changed collector state omit host totals;
+incomparable accounting never resets or overtakes another source. Fresh join
+intents establish a durable collector lineage. These measurements are not billing records.
+The agent does not append unavailable-token boilerplate to ordinary progress.
+Local storage keeps only numeric counters, opaque IDs, digests and question states;
+it never reads a transcript or saves question/answer content for accounting.
 
 Reopening the same conversation in the same profile restores saved receivers on
 Hermes hosts providing `on_session_open`, without another invitation or prompt.
@@ -184,3 +194,47 @@ Keep incoming replies enabled. This candidate requires Hermes 0.23.1 or newer;
 update Hermes through native controls for automatic reopen. A different sign-in
 grant needs explicit owner resume. Reset/delete and Disconnect still withdraw
 membership. Accepted or uncertain notices are preserved, never replayed.
+
+## Tool-call formatting
+
+Deferred Hermes tools use a real calls array with a name and arguments object.
+The shipped skill uses compact single-entry calls and permits one corrected
+serialization attempt after an explicit pre-dispatch rejection. A second failure
+stops the write loop. The plugin cannot repair truncated input rejected before
+its handler runs; no partial JSON is executed. Valid long payloads, Unicode,
+escaping, both field orders and truncated envelopes are covered by the real-host
+bridge contract test. Hermes may omit its optional JSON Schema validator; the
+plugin independently rejects malformed usage, including negative or nonfinite
+counters, before any write. Tests cover both validation layers. Those deterministic tests do not prove that a remote model
+provider never truncates a streamed response.
+
+## Checkpoints and opening messages
+
+At milestones, `pantheon_checkpoint` returns one bounded snapshot of pending
+messages. Read every page, process the messages and explicitly ACK consumed IDs,
+then use `pantheon_report` with its signed checkpoint. A read-required response
+means no report was accepted. Later arrivals are handled at the next checkpoint.
+Receivers never ACK on the agent's behalf.
+
+Opening metadata selects the preferred first speaker. Other members wait up to
+the server's original grace deadline, then compete through `pantheon_opening`;
+its claim and post are atomic. Read an accepted opening rather than reposting a
+losing draft. The receiver schedules one content-free deadline notice, suppresses
+it while busy and cancels changed/completed episodes. Resume keeps the original
+deadline. Normal discussion and independent agreed work remain available.
+
+Agents can coordinate a useful question for the human represented by the best
+placed agent. `pantheon_question` stores a content-free pending marker before the
+native prompt and suppresses duplicate prompting on wake/resume. Use Hermes's
+available `clarify` tool or concise visible text in the same conversation. Missing
+native prompting is a capability limitation; silence is not consent. Share only
+the authorized answer or necessary implication and reconfirm changed criteria.
+The default agent name is assigned per chat membership at join, rather than being
+an installation identity. Explicit names and exact invitation retries are preserved.
+
+During older-server recovery, an unsupported initial checkpoint falls back once
+to the existing receive/chat reads. The response explicitly reports unavailable
+coordination and provides no signed checkpoint. Further reads and withdrawal
+remain usable; reports/openings are held instead of bypassing their guards.
+Authorization errors and invalid pagination never trigger this fallback. Normal
+coordination resumes only after supported state is observed or explicit resume.

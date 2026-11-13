@@ -5,18 +5,25 @@ import hashlib
 import json
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
-from . import api, files, permissions, state
+from . import accounting, api, files, permissions, state
 from .session import observe
 
 CATALOG = json.loads((Path(__file__).parent / "catalog.json").read_text())["tools"]
 SETUP_CONFIRMATION = r"\o/ Pantheon setup complete!"
 PRESENTATION = json.loads((Path(__file__).parent / "presentation.json").read_text())
 SCHEMAS = {item["name"]: item for item in CATALOG}
+RECOVERY_INSTRUCTION = (
+    "Coordination tools are unavailable on this server. This is read/cleanup recovery, not a completed checkpoint. "
+    "Read these messages, use pantheon_receive and pantheon_chat for further reads, and ACK only consumed IDs. "
+    "Show the retained outcome and exact chat link, then use pantheon_command with op=withdraw for cleanup. "
+    "Do not retry unsupported checkpoint/report/opening tools or replace them with unguarded posts/reports. "
+    "Resume collaboration only after current-server coordination support is observed or an explicit successful resume."
+)
 FINAL_INSTRUCTION = (
     "Keep the chat link exact and describe only verified chat and cleanup facts. "
     "Connection cleanup does not establish task completion or validation success. "
     "Use returned incoming_replies values when present; do not infer prior settings from earlier conversation turns. "
-    "The plugin manages restoration after the last connection; do not change it yourself or add a config check just to compose the response."
+    "Incoming replies remain enabled until the human disables them. Only legacy temporary setup restores its prior setting; do not change it yourself or add a config check just to compose the response."
 )
 CONFIRM_INSTRUCTION = (
     "Read pantheon_chat and review chat.definition or chat.result. Copy that object's id to target, "
@@ -104,7 +111,7 @@ def identity():
     return api.handle(value["grant_id"])
 
 
-def store_connection(result, session, grant):
+def store_connection(result, session, grant, usage_lineage=None):
     api.handle(result["id"])
     previous = state.get("connection", result["id"]) or {}
     # No returned authority or content is copied wholesale into local state.
@@ -112,9 +119,11 @@ def store_connection(result, session, grant):
     if 'runtime_policy' in result:
         row['runtime_policy'] = result['runtime_policy']
     row.update(session=session, grant=grant)
-    for key in ("cleanup_operation", "wake", "wake_state", "terminal_deadline", "terminal_seen"):
+    for key in ("cleanup_operation", "wake", "wake_state", "wake_text_digest", "opening", "terminal_deadline", "terminal_seen", "usage_lineage", "usage_started", "usage_blocked", "coordination_unavailable"):
         if key in previous and previous.get("grant") == grant and previous.get("session") == session:
             row[key] = previous[key]
+    if not previous and usage_lineage:
+        row["usage_lineage"] = usage_lineage
     state.put("connection", row["id"], row)
     return row
 
@@ -129,7 +138,7 @@ def recover(intent, session, grant):
     # Receipts prove acceptance, not current liveness. Never resurrect a closed
     # connection from the original join response.
     result = api.request("GET", "/connections/" + api.handle(result["id"]))
-    row = store_connection(result, session, grant)
+    row = store_connection(result, session, grant, intent.get("usage_lineage"))
     state.update("intent", intent["id"], {"state": "accepted", "connection": row["id"]})
     return row
 
@@ -145,9 +154,13 @@ class Tools:
             return json.dumps(self.dispatch(name, args, session), ensure_ascii=False)
         except api.APIError as error:
             result = {"ok": False, "error": error.code}
+            if error.code == "coordination_unavailable":
+                result["instruction"] = RECOVERY_INSTRUCTION
+            if error.code == "prior_report_pending":
+                result["instruction"] = "An earlier report has an uncertain outcome. Reconcile or retry that exact key and payload before reporting newer totals. Never replace it with a new key."
             if error.code in CONFIRM_ERRORS:
                 result["instruction"] = CONFIRM_ERRORS[error.code] + " " + CONFIRM_INSTRUCTION
-            elif name == "pantheon_command" and error.code in {"invalid_arguments", "invalid_request", "conflict"}:
+            elif name in {"pantheon_command", "pantheon_report", "pantheon_opening"} and error.code in {"invalid_arguments", "invalid_request", "conflict"}:
                 result["instruction"] = (
                     "Do not blindly retry. Read pantheon_chat; check current readiness, definition/result agreement, "
                     "versions and whether the key was already used for a different payload. "
@@ -176,28 +189,53 @@ class Tools:
             return json.dumps({"ok": False, "error": "local_operation_failed", "instruction": "Use pantheon_doctor. Do not repeat an uncertain write with a new key."})
 
     def dispatch(self, name, args, session):
+        if name in {"pantheon_connect", "pantheon_resume"}:
+            with state.permission_guard():
+                return self._dispatch(name, args, session)
+        if name == "pantheon_report" or (name == "pantheon_command" and args.get("op") == "report"):
+            with state.report_guard(args.get("connection")):
+                return self._dispatch(name, args, session)
+        return self._dispatch(name, args, session)
+
+    def legacy_checkpoint(self, row, connection, session):
+        # An initial well-formed read rejected by an older server can fall back
+        # only to existing reads. Never manufacture a signed checkpoint or post.
+        messages = api.tool(connection, session, "pantheon_receive", {"connection": connection})
+        outcome = api.tool(connection, session, "pantheon_chat", {"connection": connection})
+        terminal = (outcome.get("state") == "closed" or outcome.get("result_final") is True
+                    or outcome.get("chat", {}).get("state") == "closed"
+                    or any(item["message"].get("kind") == "terminal" for item in messages))
+        state.update("connection", connection, {"coordination_unavailable": True, "wake_state": "consumed"})
+        if terminal:
+            state.update("connection", connection, {"terminal_seen": True})
+        self.runtime.start(row)
+        return {"status": "coordination_unavailable", "messages": messages, "outcome": outcome,
+                "chat_url": row["url"], "instruction": RECOVERY_INSTRUCTION + (" " + FINAL_INSTRUCTION if terminal else "")}
+
+    def _dispatch(self, name, args, session):
         if name == "pantheon_doctor":
             grant = identity()
             local = state.rows("connection")
             incoming = permissions.current()
             return {"ok": True, "signed_in": True, "incoming": incoming is True,
-                    "incoming_setting": permissions.setting(incoming),
+                    "incoming_setting": permissions.setting(incoming), "incoming_preference": permissions.mode(),
                     "connections": sum(row["grant"] == grant and row["session"] == session and row["state"] != "disconnected" for row in local),
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
                     "downloads_directory": str(files.download_root()),
-                    "version": "1.0.12"}
+                    "usage_capability": "public_hooks_partial", "usage_attribution": "exact_native_wake_turns",
+                    "version": "1.0.13"}
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
             grant = identity()
             if not permissions.ready():
                 return {"ok": False, "error": "incoming_permission_required", "instruction":
-                        "Explain visibly: Incoming replies let Pantheon deliver collaboration updates in this Hermes conversation while you wait, including after reopening this conversation, until the connection ends or its chosen deadline. The previous setting will be restored after your last connection ends. Show the human this command to run in their selected profile: hermes config set plugins.entries.pantheon.allow_gateway_injection true. Alternatively, they can enable Pantheon's incoming-replies permission in Hermes Desktop. This is a human action: do not execute the command, modify the setting, or enable it through another tool yourself. End the turn and retry only after the human confirms they enabled it. If nobody is present, return incoming_permission_required without waiting or starting a prompt."}
+                        "Explain visibly: Incoming replies let Pantheon deliver collaboration updates in this Hermes conversation while you wait, including after reopening this conversation, until the connection ends or its chosen deadline. This preference stays enabled for future invitations until you disable it in Hermes. Existing temporary approvals still restore their prior setting after their last connection. Show the human this command to run in their selected profile: hermes config set plugins.entries.pantheon.allow_gateway_injection true. Alternatively, they can enable Pantheon's incoming-replies permission in Hermes Desktop. This is a human action: do not execute the command, modify the setting, or enable it through another tool yourself. End the turn and retry only after the human confirms they enabled it. If nobody is present, return incoming_permission_required without waiting or starting a prompt."}
             if name == "pantheon_connect":
                 secret = invitation(args["link"])
                 lifetime = ({'deadline': datetime.fromtimestamp(args['expires_at'], timezone.utc).isoformat().replace('+00:00', 'Z')}
                             if 'expires_at' in args else {'runtime_policy': {'mode': 'connection'}})
-                intent = state.intent("join", session, grant, state.digest([hashlib.sha256(secret.encode()).hexdigest(), args.get("name", "")]), lifetime=lifetime)
+                intent = state.intent("join", session, grant, state.digest([hashlib.sha256(secret.encode()).hexdigest(), args.get("name", "")]), lifetime=lifetime, usage_lineage="hermes.public-hooks.v1")
                 # Pending operations created by older plugins keep the same one-hour
                 # payload and receipt identity, even after a plugin update.
                 lifetime = intent.get('lifetime', {'deadline': datetime.fromtimestamp(intent['created'] + 3590, timezone.utc).isoformat().replace('+00:00', 'Z')})
@@ -210,7 +248,7 @@ class Tools:
                     state.update("intent", intent["id"], {"state": "sent"})
                     result = api.request("POST", "/connections/join", {"session": session, "invitation": secret,
                         "name": args.get("name", ""), "operation": intent["operation"], **lifetime, "deliberate": True})
-                    row = store_connection(result, session, grant)
+                    row = store_connection(result, session, grant, intent.get("usage_lineage"))
             else:
                 connection = api.handle(args["connection"])
                 intent = state.intent("resume", session, grant, state.digest(connection))
@@ -220,6 +258,8 @@ class Tools:
                         "session": session, "operation": intent["operation"], "deliberate": True})
                     row = store_connection(result, session, grant)
             state.update("intent", intent["id"], {"state": "accepted", "connection": row["id"]})
+            if name == "pantheon_resume":
+                row = state.update("connection", row["id"], {"coordination_unavailable": False})
             self.runtime.start(row)
             connection = {"ok": True, "connection": row["id"], "chat_url": row["url"],
                           "deadline": row["deadline"], "state": row["state"]}
@@ -247,12 +287,38 @@ class Tools:
             raise api.APIError("connection_not_bound_use_explicit_resume")
         if name == "pantheon_status":
             name = "pantheon_chat_state"
-        values = dict(args)
-        if name in {"pantheon_ack", "pantheon_ack_ready", "pantheon_post", "pantheon_command"}:
+        if row.get("coordination_unavailable"):
+            if name == "pantheon_checkpoint":
+                return self.legacy_checkpoint(row, connection, session)
+            if name in {"pantheon_report", "pantheon_opening"} or (name == "pantheon_command" and args.get("op") == "report"):
+                raise api.APIError("coordination_unavailable")
+        if name == "pantheon_question":
             status = api.tool(connection, session, "pantheon_chat_state", {"connection": connection})
-            values.update(epoch=status["epoch"], config=status["config"])
+            if status.get("state") == "closed" or row.get("state") not in {"connected", "waiting"}:
+                raise api.APIError("question_connection_closed")
+            context = api.tool(connection, session, "pantheon_context", {"connection": connection})
+            return state.question(connection, args, context)
+        report = name == "pantheon_report" or (name == "pantheon_command" and args.get("op") == "report")
+        if report:
+            state.report_pending(connection, args["key"])
+        values = dict(args)
+        if name in {"pantheon_ack", "pantheon_ack_ready", "pantheon_post", "pantheon_command", "pantheon_report", "pantheon_opening"}:
+            status = api.tool(connection, session, "pantheon_chat_state", {"connection": connection})
+            state.update("connection", connection, {"opening": status.get("opening")})
+            if name in {"pantheon_report", "pantheon_opening"} or values.get("op") == "report":
+                values.update(state.write_preconditions(connection, name, args, status))
+            else:
+                values.update(epoch=status["epoch"], config=status["config"])
             if values.get("op") in {"definition", "result", "confirm"}:
                 values["completion_protocol"] = "pantheon.definition.v1"
+        if name == "pantheon_report" or (name == "pantheon_command" and values.get("op") == "report"):
+            try:
+                measured = accounting.freeze(connection, values["key"], args)
+            except ValueError as error:
+                raise api.APIError(str(error)) from None
+            values["usage_status"] = {key: measured[key] for key in ("availability", "reason", "source")}
+            if "usage" in measured:
+                values["usage"] = measured["usage"]
         if name == "pantheon_command" and values["op"] == "withdraw":
             # Human-facing keys may be short; management receipt IDs are fixed opaque handles.
             state.cleanup_intent(connection, state.digest([connection, values["key"]]))
@@ -276,13 +342,32 @@ class Tools:
                 values["receipt"] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "durable": True}
             else:
                 files.validate_download(args["path"])
-        result = api.tool(connection, session, name, values)
+        if report:
+            state.report_pending(connection, values["key"], mark=True)
+        try:
+            result = api.tool(connection, session, name, values)
+        except api.APIError as error:
+            if name == "pantheon_checkpoint" and not args.get("cursor") and error.code in {"invalid_request", "not_accepted"}:
+                return self.legacy_checkpoint(row, connection, session)
+            if report and error.code in {"invalid_request", "conflict", "closed", "not_accepted", "sign_in_required", "access_unavailable"}:
+                state.report_resolved(connection, values["key"])
+            raise
+        if report:
+            # Includes read_required: that response explicitly accepted no write.
+            state.report_resolved(connection, values["key"])
         if name == "pantheon_transfer_fetch":
             return files.save_file(args["path"], result["data"], result["transfer"])
-        if name == "pantheon_receive":
+        if name == "pantheon_checkpoint" or (isinstance(result, dict) and (result.get("opening") or {}).get("version") == "pantheon.opening.v1"):
+            state.update("connection", connection, {"coordination_unavailable": False})
+        if name == "pantheon_chat_state" and isinstance(result, dict):
+            state.update("connection", connection, {"opening": result.get("opening")})
+        if isinstance(result, dict) and "opening" in result:
+            state.update("connection", connection, {"opening": result["opening"]})
+        if name in {"pantheon_receive", "pantheon_checkpoint"}:
             state.update("connection", connection, {"wake_state": "consumed"})
         terminal = isinstance(result, dict) and (result.get("state") == "closed" or result.get("result_final") is True or result.get("chat", {}).get("state") == "closed")
         terminal = terminal or (name == "pantheon_receive" and any(item["message"]["kind"] == "terminal" for item in result))
+        terminal = terminal or (name == "pantheon_checkpoint" and any(item["message"]["kind"] == "terminal" for item in result.get("messages", [])))
         if terminal:
             outcome = api.tool(connection, session, "pantheon_chat", {"connection": connection})
             state.update("connection", connection, {"terminal_seen": True})

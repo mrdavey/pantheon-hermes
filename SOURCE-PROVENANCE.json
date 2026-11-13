@@ -14,33 +14,38 @@
     },
     "README.md": {
       "mode": "100644",
-      "sha256": "dcebd2c80c7c01f5af09eacd83b1b783fa2dc7d4113de70c4bc167096235d39e",
+      "sha256": "3aac2331bfd5fcf18762d01b64d4b33dd121967e25da61f9c5d0ec8162016d80",
       "source_path": "integrations/hermes/README.md"
     },
     "__init__.py": {
       "mode": "100644",
-      "sha256": "c377d5b53042736dea173af7dbd67d05477d6eca6e66fb4ef1df08f9bb7c41d7",
+      "sha256": "6a2940aa4a3fd0922a62df5aa6b47113eb2bbc4e43d21cd4302e37be9b7f0d30",
       "source_path": "integrations/hermes/__init__.py"
     },
     "dashboard/manifest.json": {
       "mode": "100644",
-      "sha256": "6ecb7fc20608f48d35a1f3131b07263aa3435b522f2b5b4d00c6f0ae8d0d8b0b",
+      "sha256": "b4426c98ae3c11843531ae4b5181ea468521a415e6852e43647ae315af0d3721",
       "source_path": "integrations/hermes/dashboard/manifest.json"
     },
     "dashboard/plugin_api.py": {
       "mode": "100644",
-      "sha256": "1fde0ebe0940006de2613f3a1b8059c6acc875556f73868e87986255925554fd",
+      "sha256": "c0b4a1183b0a16de7a6f99830c1d2da321b8158eee10437c96d5c0f15dcd1b70",
       "source_path": "integrations/hermes/dashboard/plugin_api.py"
     },
     "desktop/plugin.js": {
       "mode": "100644",
-      "sha256": "130f080ca0c411fad83a3f5fbaf7eab595770aed598fbf036a3c532575ecf776",
+      "sha256": "547709b8cb4c9d1e38f4148153804d692563949a978b26dcfde97e1fb89fe6b1",
       "source_path": "integrations/hermes/desktop/plugin.js"
     },
     "pantheon_native/__init__.py": {
       "mode": "100644",
       "sha256": "595f0cb0e21a541ab915b0c44d4eed5120c1432e9b8369536152a148e0cd1d3f",
       "source_path": "integrations/hermes/pantheon_native/__init__.py"
+    },
+    "pantheon_native/accounting.py": {
+      "mode": "100644",
+      "sha256": "65009cf34e0fdb5765e966b06caa03a18772ac5526cbc79562a331b04c96c6ea",
+      "source_path": "integrations/hermes/pantheon_native/accounting.py"
     },
     "pantheon_native/api.py": {
       "mode": "100644",
@@ -49,7 +54,7 @@
     },
     "pantheon_native/catalog.json": {
       "mode": "100644",
-      "sha256": "c5bf40ac6811dfcc45586e024f1a261ad9c0c6cced8148740d5ba6bb52496b94",
+      "sha256": "5655891d1a48c8eec5314a26cf839957f7e230f55c4a380ede6f08cb09bcf344",
       "source_path": "integrations/hermes/pantheon_native/catalog.json"
     },
     "pantheon_native/files.py": {
@@ -59,7 +64,7 @@
     },
     "pantheon_native/permissions.py": {
       "mode": "100644",
-      "sha256": "c043ca67543b0fb027d7d4d518faab325d374054f0860e90df60a331007c3b5c",
+      "sha256": "c118d7835fc3f3e76bf2735ccb9c21ebb0655d4ac9b417fc29844d9f786c7c9c",
       "source_path": "integrations/hermes/pantheon_native/permissions.py"
     },
     "pantheon_native/presentation.json": {
@@ -69,7 +74,7 @@
     },
     "pantheon_native/runtime.py": {
       "mode": "100644",
-      "sha256": "fb91e75474a848baee45b783ba22af368dda2ad050eeb2ef8b9baf7be5189f8c",
+      "sha256": "be1aea8bc51f342a803b863847fe0e46c39ca376208ac653f9a3e235542b4f6d",
       "source_path": "integrations/hermes/pantheon_native/runtime.py"
     },
     "pantheon_native/session.py": {
@@ -79,22 +84,22 @@
     },
     "pantheon_native/state.py": {
       "mode": "100644",
-      "sha256": "367fb710b35672b90f64a38d01c099ecd6bc49e47fe0435da78e131fd250ead5",
+      "sha256": "401058d5e9012d9dc35ef48d0916876e6fb6494d9d96aa3b40b3cead27e032aa",
       "source_path": "integrations/hermes/pantheon_native/state.py"
     },
     "pantheon_native/tools.py": {
       "mode": "100644",
-      "sha256": "da8d9eda6afcd3d1f6a5a5baba140ca938e9d66ecc6b57015a5cc99c5b0e18ff",
+      "sha256": "f63a4c049055f8080d119c43a37e9bc77da2bf70610fc67f80620587db3b0644",
       "source_path": "integrations/hermes/pantheon_native/tools.py"
     },
     "plugin.yaml": {
       "mode": "100644",
-      "sha256": "a5baf7ed5620547a98fdef2e9cd3314253cf51080fec63a34aa99d800d5646c6",
+      "sha256": "8434e9c684c6257f8c85f2058d709d59c58b0ca9b26db228b084cc7549be2b37",
       "source_path": "integrations/hermes/plugin.yaml"
     },
     "skills/collaborate/SKILL.md": {
       "mode": "100644",
-      "sha256": "ce814f44022359ee3ab489de199a82177807a9ce45d147ab8c4617fd9ce81ce5",
+      "sha256": "9544143711e3c58904dfefd41f4feb4c2c4bee763c3e2a6e0a90a3d9575b8eb8",
       "source_path": "integrations/hermes/skills/collaborate/SKILL.md"
     },
     "tests/dashboard_contract.py": {
@@ -104,12 +109,12 @@
     },
     "tests/test_native.py": {
       "mode": "100644",
-      "sha256": "8bc159687abbd611ee9b2d0fd2339ae8439636c31f5317065ed7928f7d1561c3",
+      "sha256": "14ccd7361ab42d1defe370d8a50afee241041ed294bf266b89ac7aa716000bb3",
       "source_path": "integrations/hermes/tests/test_native.py"
     }
   },
   "format": "pantheon.hermes-native-distribution.v1",
-  "inputs_sha256": "77c74bad7872ffee438986a3e4101548dab8f0b85a379428f492cbe8172edc92",
+  "inputs_sha256": "c48ee923389730a0a7397c506239e544d607f85fafa567057a98df0c2635f7e1",
   "scope": "One native OAuth plugin, fixed schemas, Desktop SDK contribution, management backend, collaboration skill, MIT license and native tests. No shared Codex runtime or portable companion.",
-  "source_commit": "5b0c21a58383edf46b43670c284a1d46d6a4ce48"
+  "source_commit": "045c1054fecce82526f901ad151382a2296f3b04"
 }

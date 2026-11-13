@@ -27,6 +27,7 @@ from hermes import register
 from hermes.pantheon_native import api, files, state, permissions
 from hermes.pantheon_native.runtime import Runtime
 from hermes.pantheon_native.session import observe
+from hermes.pantheon_native import accounting
 from hermes.pantheon_native.tools import Tools, CATALOG, invitation
 
 PROFILE = contextvars.ContextVar('test_profile', default='default')
@@ -244,16 +245,297 @@ class NativeTests(unittest.TestCase):
         args = {'connection': CONNECTION, 'op': 'report', 'key': 'usage-checkpoint',
                 'target': 'waiting', 'text': 'Available for review',
                 'usage': {'input_tokens': 1200, 'output_tokens': 300}}
-        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool') as tool:
+        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool') as tool, patch.object(self.runtime, 'start'):
             tool.side_effect = [{'epoch': 3, 'config': 7}, {'id': 'report'}]
             from hermes.pantheon_native.tools import validate
             validate('pantheon_command', args)
             self.tools.dispatch('pantheon_command', args, SESSION)
-            self.assertEqual(tool.call_args.args[3], {**args, 'epoch': 3, 'config': 7})
+            self.assertEqual(tool.call_args.args[3], {**args, 'epoch': 3, 'config': 7,
+                'usage_status': {'availability': 'partial', 'reason': 'attribution_unavailable', 'source': 'model'}})
+
+    def test_public_usage_hooks_require_exact_wake_turn_and_deduplicate_requests(self):
+        self.row(usage_lineage='fixture-v1', wake_state='accepted', wake_text_digest=state.digest('native wake'))
+        accounting.begin(SESSION, 'human-turn', 'do unrelated work')
+        accounting.record(SESSION, 'human-turn', 'unrelated', {'prompt_tokens': 900, 'output_tokens': 300})
+        self.assertEqual(accounting.snapshot(CONNECTION)['availability'], 'unavailable')
+        accounting.begin(SESSION, 'agent-turn', 'native wake')
+        # Prompt total already contains cached input; output already contains reasoning.
+        usage = {'prompt_tokens': 100, 'output_tokens': 20, 'cache_read_tokens': 30, 'reasoning_tokens': 10}
+        accounting.record(SESSION, 'agent-turn', 'request-1', usage)
+        accounting.record(SESSION, 'agent-turn', 'request-1', usage)
+        accounting.record(SESSION, 'agent-turn', 'request-2', {'prompt_tokens': 10, 'output_tokens': 2})
+        accounting.record(SESSION, 'agent-turn', 'failed-request', None)
+        self.assertEqual(accounting.snapshot(CONNECTION), {'availability': 'partial',
+            'reason': 'partial_counters', 'source': 'host', 'usage': {'input_tokens': 110, 'output_tokens': 22}})
+        accounting.begin(SESSION, 'delegated-turn', 'native wake', 'parent')
+        accounting.record(SESSION, 'delegated-turn', 'delegated-request', usage)
+        self.assertEqual(accounting.snapshot(CONNECTION)['usage']['input_tokens'], 110)
+        # A steered or ambiguously routed turn invalidates its prior association.
+        accounting.begin(SESSION, 'agent-turn', 'native wake plus human instruction')
+        accounting.record(SESSION, 'agent-turn', 'steered-request', usage)
+        self.assertEqual(accounting.snapshot(CONNECTION)['usage']['input_tokens'], 110)
+
+    def test_usage_snapshot_freezes_across_retry_and_rejects_changed_payload(self):
+        self.row(usage_lineage='fixture-v1', wake_state='accepted', wake_text_digest=state.digest('native wake'))
+        accounting.begin(SESSION, 'agent-turn', 'native wake')
+        accounting.record(SESSION, 'agent-turn', 'request-1', {'prompt_tokens': 10, 'output_tokens': 2})
+        payload = {'key': 'report', 'target': 'waiting', 'text': 'Reviewed private task text'}
+        first = accounting.freeze(CONNECTION, 'report', payload)
+        accounting.record(SESSION, 'agent-turn', 'request-2', {'prompt_tokens': 30, 'output_tokens': 4})
+        self.assertEqual(accounting.freeze(CONNECTION, 'report', payload), first)
+        with self.assertRaisesRegex(ValueError, 'report_key_payload_conflict'):
+            accounting.freeze(CONNECTION, 'report', {**payload, 'text': 'changed'})
+        self.assertEqual(accounting.freeze(CONNECTION, 'next', {**payload, 'key': 'next'})['usage'],
+                         {'input_tokens': 40, 'output_tokens': 6})
+        with state.database() as db:
+            records = ' '.join(row[0] for row in db.execute("SELECT body FROM records WHERE kind LIKE 'usage%'"))
+        self.assertNotIn(payload['text'], records)
+
+    def test_legacy_and_model_reported_usage_never_mix_with_host_lineage(self):
+        self.row(wake_state='accepted', wake_text_digest=state.digest('wake'))
+        accounting.begin(SESSION, 'legacy-turn', 'wake')
+        accounting.record(SESSION, 'legacy-turn', 'request', {'prompt_tokens': 5000, 'output_tokens': 200})
+        self.assertEqual(accounting.snapshot(CONNECTION), {'availability': 'unavailable',
+            'reason': 'attribution_unavailable', 'source': 'host'})
+        self.row(usage_lineage='fixture-v1', wake_state='accepted', wake_text_digest=state.digest('wake'))
+        accounting.begin(SESSION, 'fresh-turn', 'wake')
+        accounting.record(SESSION, 'fresh-turn', 'first', {'prompt_tokens': 10, 'output_tokens': 2})
+        accounting.freeze(CONNECTION, 'model-report', {'usage': {'input_tokens': 1200, 'output_tokens': 300}})
+        accounting.record(SESSION, 'fresh-turn', 'later', {'prompt_tokens': 5000, 'output_tokens': 200})
+        self.assertNotIn('usage', accounting.freeze(CONNECTION, 'host-report', {'key': 'host-report'}))
+        self.assertEqual(accounting.snapshot(CONNECTION)['reason'], 'attribution_unavailable')
+
+    def test_missing_accumulator_cannot_restart_previously_measured_lineage(self):
+        self.row(usage_lineage='fixture-v1', wake_state='accepted', wake_text_digest=state.digest('wake'))
+        accounting.begin(SESSION, 'turn', 'wake')
+        accounting.record(SESSION, 'turn', 'first', {'prompt_tokens': 10, 'output_tokens': 2})
+        state.delete('usage', CONNECTION)
+        accounting.record(SESSION, 'turn', 'second', {'prompt_tokens': 100, 'output_tokens': 20})
+        self.assertEqual(accounting.snapshot(CONNECTION), {'availability': 'unavailable',
+            'reason': 'counter_reset', 'source': 'host'})
+
+    def test_collector_lineage_starts_only_for_fresh_join_intents(self):
+        from hermes.pantheon_native.tools import store_connection
+        intent = state.intent('join', SESSION, GRANT, 'fresh', usage_lineage='hermes.public-hooks.v1')
+        result = self.row(); state.delete('connection', CONNECTION)
+        created = store_connection(result, SESSION, GRANT, intent['usage_lineage'])
+        self.assertEqual(created['usage_lineage'], intent['usage_lineage'])
+        resumed = store_connection(result, SESSION, GRANT)
+        self.assertEqual(resumed['usage_lineage'], intent['usage_lineage'])
+        state.delete('connection', CONNECTION)
+        unknown = store_connection(result, SESSION, GRANT)
+        self.assertNotIn('usage_lineage', unknown)
+        unchanged = store_connection(result, SESSION, GRANT, intent['usage_lineage'])
+        self.assertNotIn('usage_lineage', unchanged)
+        old = state.intent('join', SESSION, GRANT, 'old')
+        retry = state.intent('join', SESSION, GRANT, 'old', usage_lineage='hermes.public-hooks.v1')
+        self.assertEqual(old, retry); self.assertNotIn('usage_lineage', retry)
+
+    def test_real_host_request_hook_preserves_normalized_usage_semantics(self):
+        try:
+            from agent.api_request_hooks import ApiRequestHooksMixin
+            from agent.turn_response_intake import _fire_post_api_request_hook
+        except ImportError:
+            self.skipTest('real Hermes usage emitter supplied by isolated contract runner')
+        class Host(ApiRequestHooksMixin):
+            session_id = 'native'; platform = 'desktop'; model = 'synthetic'
+            provider = 'nous'; api_mode = 'chat_completions'; base_url = 'https://example.invalid'
+        register(self.ctx)
+        self.row(usage_lineage='fixture-v1', wake_state='accepted', wake_text_digest=state.digest('native wake'))
+        response = types.SimpleNamespace(model='synthetic', usage={'prompt_tokens': 100,
+            'completion_tokens': 20, 'prompt_tokens_details': {'cached_tokens': 30},
+            'completion_tokens_details': {'reasoning_tokens': 10}})
+        assistant = types.SimpleNamespace(content='Synthetic result', tool_calls=[])
+        def invoke(name, **args):
+            self.assertEqual(args['usage']['prompt_tokens'], 100)
+            self.assertEqual(args['usage']['output_tokens'], 20)
+            self.assertEqual(args['usage']['cache_read_tokens'], 30)
+            self.assertEqual(args['usage']['reasoning_tokens'], 10)
+            return self.ctx.hooks[name](**args)
+        # Synthetic provider has no MoA advisors. Isolate that unrelated loop
+        # helper so this unit contract cannot bootstrap/run the host conversation.
+        loop = types.ModuleType('agent.conversation_loop')
+        loop._moa_reference_metrics_for_hook = lambda agent: None
+        with patch.dict(sys.modules, {'agent.conversation_loop': loop}), patch('hermes.observe', return_value=SESSION), patch.object(Runtime, 'start'), patch('hermes_cli.lifecycle.has_hook', return_value=True), patch('hermes_cli.lifecycle.invoke_hook', side_effect=invoke) as hook:
+            self.ctx.hooks['pre_llm_call'](session_id='native', turn_id='turn', user_message='native wake')
+            _fire_post_api_request_hook(Host(), response, assistant, 'stop', api_messages=[],
+                api_call_count=1, api_duration=.1, api_start_time=10, api_request_id='measured-request',
+                effective_task_id='task', turn_id='turn')
+        hook.assert_called_once()
+        self.assertEqual(accounting.snapshot(CONNECTION)['usage'], {'input_tokens': 100, 'output_tokens': 20})
+
+    def test_registered_public_usage_hooks_do_not_read_transcripts(self):
+        register(self.ctx)
+        self.row(usage_lineage='fixture-v1', wake_state='accepted', wake_text_digest=state.digest('native wake'))
+        with patch('hermes.observe', return_value=SESSION), patch.object(Runtime, 'start'):
+            self.ctx.hooks['pre_llm_call'](session_id='native', turn_id='turn', user_message='native wake')
+            for hook in ('post_api_request', 'post_auxiliary_call'):
+                self.ctx.hooks[hook](session_id='native', turn_id='turn', api_request_id=hook,
+                                   usage={'prompt_tokens': 50, 'output_tokens': 5})
+        self.assertEqual(accounting.snapshot(CONNECTION)['usage'], {'input_tokens': 100, 'output_tokens': 10})
+
+    def test_older_recovery_checkpoint_falls_back_once_to_read_and_cleanup(self):
+        self.row(wake_state='accepted')
+        calls = []
+        def tool(c, s, name, args):
+            calls.append(name)
+            if name == 'pantheon_checkpoint': raise api.APIError('invalid_request', 400)
+            if name == 'pantheon_receive': return [{'message': {'id': 'terminal', 'kind': 'terminal'}}]
+            if name == 'pantheon_chat': return {'chat': {'state': 'closed'}, 'result_final': True}
+            raise AssertionError(name)
+        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=tool), patch.object(self.runtime, 'start'):
+            first = self.tools.dispatch('pantheon_checkpoint', {'connection': CONNECTION}, SESSION)
+            self.assertEqual(first['status'], 'coordination_unavailable')
+            self.assertNotIn('checkpoint', first)
+            self.assertEqual(calls, ['pantheon_checkpoint', 'pantheon_receive', 'pantheon_chat'])
+            self.tools.dispatch('pantheon_checkpoint', {'connection': CONNECTION}, SESSION)
+            self.assertEqual(calls.count('pantheon_checkpoint'), 1)
+            self.assertTrue(state.get('connection', CONNECTION)['terminal_seen'])
+            with self.assertRaisesRegex(api.APIError, 'coordination_unavailable'):
+                self.tools.dispatch('pantheon_report', {'connection': CONNECTION, 'key': 'report'}, SESSION)
+            self.assertNotIn('pantheon_report', calls)
+        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', return_value={'state': 'active', 'opening': {'version': 'pantheon.opening.v1'}}), patch.object(self.runtime, 'start'):
+            self.tools.dispatch('pantheon_status', {'connection': CONNECTION}, SESSION)
+        self.assertFalse(state.get('connection', CONNECTION)['coordination_unavailable'])
+
+    def test_checkpoint_auth_failure_or_bad_cursor_never_downgrades(self):
+        self.row()
+        for code, extra in [('access_unavailable', {}), ('invalid_request', {'cursor': 'bad'})]:
+            with self.subTest(code=code), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=api.APIError(code)) as tool:
+                with self.assertRaises(api.APIError):
+                    self.tools.dispatch('pantheon_checkpoint', {'connection': CONNECTION, **extra}, SESSION)
+                self.assertEqual(tool.call_count, 1)
+                self.assertFalse(state.get('connection', CONNECTION).get('coordination_unavailable'))
+
+    def test_checkpoint_reads_without_ack_and_report_freezes_preconditions(self):
+        self.row(wake_state='accepted')
+        calls = []
+        status = {'state': 'active', 'epoch': 3, 'config': 7}
+        def tool(connection, session, name, args):
+            calls.append((name, dict(args)))
+            if name == 'pantheon_chat_state': return status
+            if name == 'pantheon_checkpoint': return {'messages': [], 'checkpoint': 'signed-cutoff'}
+            return {'status': 'ok'}
+        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=tool), patch.object(self.runtime, 'start'):
+            self.tools.dispatch('pantheon_checkpoint', {'connection': CONNECTION}, SESSION)
+            self.assertEqual([name for name, _ in calls], ['pantheon_checkpoint'])
+            self.assertEqual(state.get('connection', CONNECTION)['wake_state'], 'consumed')
+            args = {'connection': CONNECTION, 'key': 'checkpoint-report', 'target': 'waiting', 'text': 'Reviewed peers', 'checkpoint': 'signed-cutoff'}
+            self.tools.dispatch('pantheon_report', args, SESSION)
+            first = calls[-1]
+            status.update(epoch=4, config=9)
+            self.tools.dispatch('pantheon_report', args, SESSION)
+            self.assertEqual(calls[-1], first)
+            with self.assertRaisesRegex(api.APIError, 'write_key_payload_conflict'):
+                self.tools.dispatch('pantheon_report', {**args, 'text': 'changed'}, SESSION)
+
+    def test_uncertain_report_fences_new_keys_until_exact_retry_resolves(self):
+        self.row(usage_lineage='fixture-v1')
+        status = {'state': 'active', 'epoch': 3, 'config': 7}
+        writes = []
+        fail = [True]
+        def tool(c, s, name, args):
+            if name == 'pantheon_chat_state': return status
+            writes.append(dict(args))
+            if fail[0]: raise api.APIError('outcome_unknown')
+            return {'status': 'ok'}
+        args = {'connection': CONNECTION, 'key': 'first-report', 'target': 'waiting', 'text': 'waiting', 'checkpoint': 'signed'}
+        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=tool), patch.object(self.runtime, 'start'):
+            with self.assertRaisesRegex(api.APIError, 'outcome_unknown'):
+                self.tools.dispatch('pantheon_report', args, SESSION)
+            with self.assertRaisesRegex(api.APIError, 'prior_report_pending'):
+                self.tools.dispatch('pantheon_report', {**args, 'key': 'second-report'}, SESSION)
+            self.assertEqual(len(writes), 1)
+            fail[0] = False
+            self.tools.dispatch('pantheon_report', args, SESSION)
+            self.assertEqual(writes[0], writes[1])
+            self.tools.dispatch('pantheon_report', {**args, 'key': 'second-report'}, SESSION)
+            self.assertEqual(len(writes), 3)
+
+    def test_read_required_report_does_not_strand_pending_fence(self):
+        self.row()
+        args = {'connection': CONNECTION, 'key': 'first', 'target': 'waiting', 'text': 'waiting', 'checkpoint': 'signed'}
+        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=lambda c,s,n,a: {'epoch': 3, 'config': 7} if n == 'pantheon_chat_state' else {'status': 'read_required', 'pending_ids': ['peer']}), patch.object(self.runtime, 'start'):
+            self.assertEqual(self.tools.dispatch('pantheon_report', args, SESSION)['status'], 'read_required')
+            state.report_pending(CONNECTION, 'new-key')
+
+    def test_native_question_claim_is_durable_scoped_and_content_free(self):
+        self.row()
+        context = {'context_version': 2, 'config': 7}
+        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=lambda c,s,n,a: {'state': 'active'} if n == 'pantheon_chat_state' else context):
+            args = {'connection': CONNECTION, 'id': 'decision-1', 'state': 'pending', 'context_version': 2}
+            self.assertTrue(self.tools.dispatch('pantheon_question', args, SESSION)['should_prompt'])
+            self.assertFalse(self.tools.dispatch('pantheon_question', args, SESSION)['should_prompt'])
+            pending = self.tools.dispatch('pantheon_question', {'connection': CONNECTION}, SESSION)
+            self.assertEqual([row['id'] for row in pending['pending']], ['decision-1'])
+            context['context_version'] = 3
+            self.assertEqual(self.tools.dispatch('pantheon_question', {'connection': CONNECTION}, SESSION)['pending'], [])
+            with self.assertRaisesRegex(api.APIError, 'question_context_changed'):
+                self.tools.dispatch('pantheon_question', args, SESSION)
+            with self.assertRaises(api.APIError):
+                self.tools.dispatch('pantheon_question', args, {**SESSION, 'id': 'other'})
+        self.assertEqual(set(state.rows('question')[0]), {'connection','id','state','context_version','config'})
+
+    def test_opening_deadline_uses_authority_and_cancels_completed_or_changed_episode(self):
+        opening = {'version': 'pantheon.opening.v1', 'episode': 'episode-1', 'config': 7,
+                   'preferred_member': 'peer', 'deadline': '1970-01-01T00:00:20Z'}
+        row = self.row(opening=opening)
+        status = {'state': 'active', 'opening': opening}
+        with patch.object(api, 'tool', return_value=status):
+            self.assertIsNone(self.runtime.opening_due(row, 19))
+            self.assertEqual(self.runtime.opening_due(row, 20), 'episode-1')
+            for changed in ({**opening, 'message_id': 'opening-message'}, {**opening, 'episode': 'episode-2'}, {**opening, 'config': 8}, None):
+                status['opening'] = changed
+                self.assertIsNone(self.runtime.opening_due(row, 21))
+        with patch.object(api, 'tool') as tool:
+            self.assertIsNone(self.runtime.opening_due({**row, 'opening': {**opening, 'message_id': 'done'}}, 99))
+            tool.assert_not_called()
+
+    def test_first_conditional_opening_wait_arms_original_deadline(self):
+        self.row()
+        opening = {'episode': 'episode', 'config': 7, 'deadline': '2090-01-01T00:00:20Z'}
+        status = {'state': 'active', 'epoch': 3, 'config': 7, 'opening': opening}
+        with patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=[status, {'status': 'wait_until', 'wait_until': opening['deadline']}]), patch.object(self.runtime, 'start'):
+            result = self.tools.dispatch('pantheon_opening', {'connection': CONNECTION, 'key': 'opening',
+                'text': 'Proposed allocation', 'episode': 'episode', 'checkpoint': 'signed'}, SESSION)
+        self.assertEqual(result['status'], 'wait_until')
+        self.assertEqual(state.get('connection', CONNECTION)['opening'], opening)
+
+    def test_opening_timeout_wake_is_content_free_and_not_replayed(self):
+        opening = {'episode': 'episode', 'config': 7, 'deadline': '1970-01-01T00:00:20Z'}
+        row = self.row(opening=opening)
+        stop = threading.Event()
+        original = self.ctx.inject_message
+        def inject(*args, **kwargs):
+            result = original(*args, **kwargs)
+            stop.set()
+            return result
+        def tool(c, s, name, args):
+            return [] if name == 'pantheon_receive' else {'state': 'active', 'opening': opening}
+        with patch.object(permissions, 'current', return_value=True), patch.object(api, 'tool', side_effect=tool), patch.object(self.ctx, 'inject_message', side_effect=inject):
+            self.runtime.run(row, stop)
+        self.assertEqual(len(self.ctx.injected), 1)
+        self.assertIn('opening deadline', self.ctx.injected[0][1])
+        self.assertFalse(state.claim_wake(CONNECTION, state.digest(['opening', 'episode'])))
+        state.update('connection', CONNECTION, {'wake_state': 'consumed'})
+        self.assertFalse(state.claim_wake(CONNECTION, state.digest(['opening', 'episode'])))
+
+    def test_permission_guard_serializes_restoration_with_a_new_join(self):
+        entered = threading.Event()
+        def joining():
+            with state.permission_guard(): entered.set()
+        with state.permission_guard():
+            state.put('permission', 'enrollment', {'version': 2, 'mode': 'persistent'})
+            worker = threading.Thread(target=joining); worker.start()
+            self.assertFalse(entered.wait(.05))
+        worker.join(2)
+        self.assertTrue(entered.is_set())
 
     def test_invalid_usage_fails_before_host_or_network(self):
         for usage in ({}, {'input_tokens': 1}, {'input_tokens': -1, 'output_tokens': 0},
                       {'input_tokens': True, 'output_tokens': 0}, {'input_tokens': 1.5, 'output_tokens': 0},
+                      {'input_tokens': float('nan'), 'output_tokens': 0},
+                      {'input_tokens': float('inf'), 'output_tokens': 0},
                       {'input_tokens': 10**12+1, 'output_tokens': 0},
                       {'input_tokens': 1, 'output_tokens': 0, 'private': 'data'}):
             with self.subTest(usage=usage), patch.object(api, 'request') as request, patch.object(api, 'tool') as tool:
@@ -261,6 +543,17 @@ class NativeTests(unittest.TestCase):
                     'op': 'report', 'key': 'usage', 'target': 'waiting', 'usage': usage}))
                 self.assertEqual(result['error'], 'invalid_arguments')
                 request.assert_not_called(); tool.assert_not_called()
+
+    def test_new_checkpoint_mutations_explain_conflict_recovery(self):
+        self.row()
+        common = {'connection': CONNECTION, 'key': 'conditional', 'text': 'Plan', 'checkpoint': 'signed'}
+        for name, args in [('pantheon_report', {**common, 'target': 'waiting'}),
+                           ('pantheon_opening', {**common, 'episode': 'episode'})]:
+            with self.subTest(name=name), patch('hermes.pantheon_native.tools.observe', return_value=SESSION), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=api.APIError('conflict')):
+                result = json.loads(self.tools.call(name, args, session_id=SESSION['id']))
+                self.assertEqual(result['error'], 'conflict')
+                self.assertIn('Do not blindly retry', result['instruction'])
+                self.assertIn('never to replay an uncertain write', result['instruction'])
 
     def test_confirm_invalid_arguments_fail_before_host_or_network(self):
         base = {'connection': CONNECTION, 'op': 'confirm', 'key': 'confirm-v2',
@@ -493,6 +786,35 @@ class NativeTests(unittest.TestCase):
             self.assertLess(ready['setup_message'].index(ready['banner']), ready['setup_message'].index(ready['chat_url']))
             self.assertLess(ready['setup_message'].index(ready['chat_url']), ready['setup_message'].index(ready['setup_confirmation']))
 
+    def test_new_incoming_permission_persists_across_connections(self):
+        for initial in (None, False):
+            with patch.object(permissions, 'current', return_value=initial):
+                self.assertFalse(permissions.ready())
+            self.assertIsNone(state.get('permission', 'prior'))
+            with patch.object(permissions, 'current', return_value=True):
+                self.assertTrue(permissions.ready())
+                self.row(state='disconnected')
+                permissions.restore()
+                self.assertTrue(permissions.ready())
+                self.assertEqual(permissions.mode(), 'persistent')
+            with patch.object(permissions, 'current', return_value=False):
+                self.assertFalse(permissions.ready())
+
+    def test_legacy_idle_setup_restores_before_new_connection(self):
+        state.put('permission', 'prior', {'value': False})
+        self.row(state='disconnected')
+        value = [True]
+        config = types.ModuleType('hermes_cli.config')
+        config.set_config_value = lambda key, setting: value.__setitem__(0, False)
+        config.unset_config_value = lambda key: value.__setitem__(0, None)
+        with patch.dict(sys.modules, {'hermes_cli.config': config}), patch.object(permissions, 'current', side_effect=lambda: value[0]):
+            self.assertFalse(permissions.ready())
+            self.assertIsNone(state.get('permission', 'prior'))
+            value[0] = True
+            self.assertTrue(permissions.ready())
+            permissions.restore()
+            self.assertTrue(value[0])
+
     def test_permission_restoration_does_not_override_later_human_choice(self):
         state.put('permission','prior',{'value':None})
         removed=[]
@@ -721,6 +1043,80 @@ class NativeTests(unittest.TestCase):
         with patch.object(threading.Thread,'start') as start:
             self.runtime.start(row)
         self.assertEqual(row['state'],'disconnected');start.assert_not_called()
+
+class HostBridgeTests(unittest.TestCase):
+    def test_real_bridge_preserves_valid_envelopes_and_rejects_truncation(self):
+        try:
+            from tools.tool_search_validation import normalize_tool_call_entries
+        except ImportError:
+            self.skipTest('real Hermes bridge supplied by the isolated contract runner')
+        from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
+        import model_tools
+        from tools import tool_search_validation as bridge_validation
+        from tools.registry import registry
+        schema = next(item for item in CATALOG if item['name'] == 'pantheon_command')
+        definitions = [{'type': 'function', 'function': {'name': 'pantheon_command', 'parameters': schema['inputSchema']}}]
+        invoked = []
+        def handler(args, **kwargs):
+            # Hermes may lack its optional jsonschema dependency. Pantheon's
+            # own runtime boundary still validates before any simulated write.
+            from hermes.pantheon_native.tools import validate
+            validate('pantheon_command', args)
+            invoked.append(args)
+            return json.dumps({'accepted': True})
+        registry.register(name='pantheon_command', toolset='pantheon', schema=definitions[0]['function'], handler=handler)
+        text = ('Unicode λ, quote " and slash \\; newline\n' * 200) + 'LAST DETAIL'
+        args = {'connection': CONNECTION, 'op': 'report', 'key': 'bridge-regression',
+                'target': 'working', 'text': text,
+                'usage': {'input_tokens': 125, 'output_tokens': 25}}
+        for entry in ({'name': 'pantheon_command', 'arguments': args},
+                      {'arguments': args, 'name': 'pantheon_command'}):
+            for separators in (None, (',', ':')):
+                encoded = json.dumps([entry], ensure_ascii=False, separators=separators)
+                # Reconstruct chunks splitting every possible JSON escape/token position.
+                for size in (1, 7, 2807, len(encoded)):
+                    for envelope in ([entry], encoded):
+                        wire = json.dumps({'calls': envelope}, ensure_ascii=False, separators=separators)
+                        accumulator = _ToolCallAccumulator()
+                        for offset in range(0, len(wire), size):
+                            accumulator.feed(types.SimpleNamespace(index=0, id='synthetic-call',
+                                function=types.SimpleNamespace(name='tool_call' if offset == 0 else None,
+                                                               arguments=wire[offset:offset+size])))
+                        reconstructed = accumulator.materialize()[0]['function']['arguments']
+                        self.assertEqual(reconstructed, wire)
+                        decoded = json.loads(reconstructed)
+                        entries, error = normalize_tool_call_entries(decoded)
+                        self.assertIsNone(error)
+                        self.assertEqual(entries, [{'name': 'pantheon_command', 'arguments': args}])
+                        self.assertIsNone(bridge_validation.validate_deferred_call_args('pantheon_command', entries[0]['arguments']))
+                        before = len(invoked)
+                        with patch.object(model_tools, 'get_tool_definitions', return_value=definitions):
+                            result = model_tools.handle_function_call('tool_call', decoded,
+                                enabled_toolsets=['pantheon'], skip_pre_tool_call_hook=True,
+                                skip_tool_request_middleware=True, skip_tool_execution_middleware=True)
+                        self.assertEqual(json.loads(result), {'accepted': True})
+                        self.assertEqual(invoked[before:], [args])
+                entries, error = normalize_tool_call_entries({'calls': encoded[:-3]})
+                self.assertEqual(entries, [])
+                self.assertIn('not valid JSON', error)
+                before = len(invoked)
+                with patch.object(model_tools, 'get_tool_definitions', return_value=definitions):
+                    result = model_tools.handle_function_call('tool_call', {'calls': encoded[:-3]}, enabled_toolsets=['pantheon'])
+                self.assertIn('not valid JSON', result)
+                self.assertEqual(len(invoked), before)
+        for counts in ({'input_tokens': -1, 'output_tokens': 0},
+                       {'input_tokens': float('nan'), 'output_tokens': 0},
+                       {'input_tokens': float('inf'), 'output_tokens': 0}):
+            malformed = {'calls': [{'name': 'pantheon_command', 'arguments': {**args, 'usage': counts}}]}
+            for optional_dependency in ({}, {'jsonschema': None}):
+                before = len(invoked)
+                with patch.dict(sys.modules, optional_dependency), patch.object(model_tools, 'get_tool_definitions', return_value=definitions):
+                    result = model_tools.handle_function_call('tool_call', malformed,
+                        enabled_toolsets=['pantheon'], skip_pre_tool_call_hook=True,
+                        skip_tool_request_middleware=True, skip_tool_execution_middleware=True)
+                self.assertNotEqual(json.loads(result), {'accepted': True})
+                self.assertEqual(len(invoked), before)
+
 
 class HostStorageTests(unittest.TestCase):
     def setUp(self):

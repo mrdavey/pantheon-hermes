@@ -14,15 +14,21 @@ def current():
 
 
 def ready():
-    value = current()
-    if value is True:
-        return True
-    if state.get("permission", "prior") is None:
-        state.put("permission", "prior", {"value": value})
-    return False
+    # New setup observes the native persistent preference; it never captures a
+    # temporary baseline. Records from older versions still mean restoration was
+    # promised and must be honored after those connections end.
+    with state.permission_guard():
+        restore()
+        state.put("permission", "enrollment", {"version": 2, "mode": mode()})
+        return current() is True
 
 
 def restore():
+    with state.permission_guard():
+        _restore()
+
+
+def _restore():
     # No restoration while another connection still needs replies. A human's
     # subsequent false/unset choice always wins. This only restores our baseline.
     if any(row.get("state") not in {"disconnected", "revoked", "authorization_unavailable"} for row in state.rows("connection")):
@@ -37,3 +43,7 @@ def restore():
         else:
             set_config_value(KEY, "false")
     state.delete("permission", "prior")
+
+
+def mode():
+    return "legacy_temporary" if state.get("permission", "prior") is not None else "persistent"

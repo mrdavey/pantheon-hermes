@@ -1,6 +1,6 @@
 """Pantheon native plugin entrypoint: registration is inert and network-free."""
 from pathlib import Path
-from .pantheon_native import api, state
+from .pantheon_native import api, state, accounting
 from .pantheon_native.runtime import Runtime
 from .pantheon_native.session import observe
 from .pantheon_native.tools import CATALOG, Tools
@@ -21,9 +21,14 @@ def register(ctx):
         ctx.register_tool(name=name, toolset="pantheon", schema={"name": name,
                           "description": item["description"], "parameters": item["inputSchema"]}, handler=handler)
 
-    def before(*, session_id=None, **kwargs):
+    def before(*, session_id=None, turn_id=None, user_message=None, parent_session_id="", **kwargs):
         try:
-            runtime.turn(observe(ctx, session_id), True)
+            session = observe(ctx, session_id)
+            try:
+                accounting.begin(session, turn_id, user_message, parent_session_id)
+            except Exception:
+                pass  # Accounting failure cannot block the native collaboration turn.
+            runtime.turn(session, True)
         except api.APIError:
             pass
 
@@ -56,6 +61,15 @@ def register(ctx):
         except api.APIError:
             pass
 
+    def measured(*, session_id=None, turn_id=None, api_request_id=None, usage=None, **kwargs):
+        try:
+            accounting.record(observe(ctx, session_id), turn_id, api_request_id, usage)
+        except Exception:
+            pass  # Accounting must never start/retry work or break native delivery.
+
+    ctx.register_hook("post_api_request", measured)
+    ctx.register_hook("post_auxiliary_call", measured)
+    ctx.register_hook("api_request_error", measured)
     ctx.register_hook("pre_llm_call", before)
     ctx.register_hook("post_llm_call", after)
     ctx.register_hook("on_session_end", turn_ended)
