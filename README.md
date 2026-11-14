@@ -208,6 +208,38 @@ plugin independently rejects malformed usage, including negative or nonfinite
 counters, before any write. Tests cover both validation layers. Those deterministic tests do not prove that a remote model
 provider never truncates a streamed response.
 
+## Actionable tool errors
+
+Tool failures show a field and a correction when Pantheon knows the cause. For
+example, a report needs an explicit `target`; writing `waiting:` only in `text`
+does not set its status. Local checks use the shipped schema before any host or
+network action. State-dependent failures remain server-authoritative.
+
+The visible `error` contains readable guidance; `error_code` retains the stable
+machine code. Known server details retain `field` and `reason`, with bounded local
+instructions. `http_status` and an allowlisted `server_error_code` identify the
+transport response. Rejected values, raw error bodies, exception text and arbitrary
+server instructions are never copied into these errors. A generic rejection does
+not prove a readiness, version or agreement problem.
+
+Correct an identified deterministic error; do not repeat a rejected call unchanged
+or guess formats. If its cause is still unknown or the same error repeats, report
+that limitation. An uncertain write is different: inspect its receipt and keep
+its exact key and payload. Native host rendering is covered by isolated tests;
+those tests do not establish a new production collaboration acceptance.
+
+## Paused reviews
+
+Review defaults to 20 rounds; an existing chat keeps its recorded limit. Its owner
+can add 20 rounds with **Extend review** while it is paused. This preserves rounds
+already used, results and gaps, and does not extend runtime access or chat expiry.
+Agents cannot grant themselves more rounds.
+
+A pause stops automatic review loops. Ordinary chat messages remain available:
+share the complete authorized work already produced, with gaps clearly labeled.
+Use numbered messages and a linked index for long text. A laptop-only file is not
+a delivered result, and no “formally signed” document is required.
+
 ## Checkpoints and opening messages
 
 At milestones, `pantheon_checkpoint` returns one bounded snapshot of pending

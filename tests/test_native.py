@@ -541,7 +541,7 @@ class NativeTests(unittest.TestCase):
             with self.subTest(usage=usage), patch.object(api, 'request') as request, patch.object(api, 'tool') as tool:
                 result = json.loads(self.tools.call('pantheon_command', {'connection': CONNECTION,
                     'op': 'report', 'key': 'usage', 'target': 'waiting', 'usage': usage}))
-                self.assertEqual(result['error'], 'invalid_arguments')
+                self.assertEqual(result['error_code'], 'invalid_arguments')
                 request.assert_not_called(); tool.assert_not_called()
 
     def test_new_checkpoint_mutations_explain_conflict_recovery(self):
@@ -551,7 +551,7 @@ class NativeTests(unittest.TestCase):
                            ('pantheon_opening', {**common, 'episode': 'episode'})]:
             with self.subTest(name=name), patch('hermes.pantheon_native.tools.observe', return_value=SESSION), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=api.APIError('conflict')):
                 result = json.loads(self.tools.call(name, args, session_id=SESSION['id']))
-                self.assertEqual(result['error'], 'conflict')
+                self.assertEqual(result['error_code'], 'conflict')
                 self.assertIn('Do not blindly retry', result['instruction'])
                 self.assertIn('never to replay an uncertain write', result['instruction'])
 
@@ -567,7 +567,7 @@ class NativeTests(unittest.TestCase):
         for changes, code in cases:
             with self.subTest(changes=changes), patch.object(api, 'request') as request, patch.object(api, 'tool') as tool, patch('hermes.pantheon_native.tools.observe') as observe_session:
                 result = json.loads(self.tools.call('pantheon_command', {**base, **changes}))
-                self.assertEqual(result['error'], code)
+                self.assertEqual(result['error_code'], code)
                 self.assertIn('source=agree is invalid', result['instruction'])
                 self.assertIn('digest verbatim', result['instruction'])
                 request.assert_not_called(); tool.assert_not_called(); observe_session.assert_not_called()
@@ -585,7 +585,7 @@ class NativeTests(unittest.TestCase):
         for code in ('invalid_request', 'conflict', 'outcome_unknown'):
             with self.subTest(code=code), patch('hermes.pantheon_native.tools.observe', return_value=SESSION), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=[{'epoch': 3, 'config': 7}, api.APIError(code)]) as tool:
                 result = json.loads(self.tools.call('pantheon_command', base))
-                self.assertEqual(result['error'], code)
+                self.assertEqual(result['error_code'], code)
                 self.assertEqual(tool.call_count, 2)
                 if code != 'outcome_unknown':
                     self.assertIn('digest verbatim', result['instruction'])
@@ -593,13 +593,13 @@ class NativeTests(unittest.TestCase):
                 else:
                     self.assertNotIn('instruction', result)
 
-    def test_report_conflict_explains_definition_gate(self):
+    def test_report_unknown_conflict_does_not_guess_definition_gate(self):
         self.row()
         with patch('hermes.pantheon_native.tools.observe', return_value=SESSION), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=[{'epoch': 3, 'config': 7}, api.APIError('conflict')]) as tool:
             result = json.loads(self.tools.call('pantheon_command', {'connection': CONNECTION, 'op': 'report', 'key': 'working', 'target': 'working'}))
-            self.assertEqual(result['error'], 'conflict')
-            self.assertIn('Report waiting', result['instruction'])
-            self.assertIn('key was already used', result['instruction'])
+            self.assertEqual(result['error_code'], 'conflict')
+            self.assertIn('No specific cause was provided', result['instruction'])
+            self.assertIn('do not guess readiness', result['instruction'])
             self.assertEqual(tool.call_count, 2)
     def test_wake_claim_is_bounded_and_uncertain_not_replayed(self):
         self.row()
@@ -722,7 +722,7 @@ class NativeTests(unittest.TestCase):
         for code in ('sign_in_required', 'native_auth_unavailable', 'public_client_id_required'):
             with self.subTest(code=code), patch('hermes.pantheon_native.tools.observe',return_value=SESSION), patch.object(api,'request',side_effect=api.APIError(code)):
                 result=json.loads(self.tools.call('pantheon_doctor',{}))
-            self.assertEqual(result['error'],code)
+            self.assertEqual(result['error_code'],code)
             self.assertNotIn('setup_confirmation',result)
             instruction=result['instruction']
             self.assertLess(instruction.index('hermes config get'),instruction.index('hermes config set'))
@@ -1145,5 +1145,162 @@ class HostStorageTests(unittest.TestCase):
         root.symlink_to(outside,target_is_directory=True)
         with self.assertRaises(OSError):files.download_root()
         self.assertEqual(list(outside.iterdir()),[])
+
+class ErrorSurfaceTests(unittest.TestCase):
+    setUp = NativeTests.setUp
+    row = NativeTests.row
+
+    @contextlib.contextmanager
+    def provider_response(self, status, body):
+        # The general CI suite has no Hermes installation. Stub only its public
+        # transport seam there; the mandatory host lanes use real response types.
+        with contextlib.ExitStack() as stack:
+            if importlib.util.find_spec('hermes_cli') is None:
+                host = types.ModuleType('hermes_cli')
+                host.__path__ = []
+                provider = types.ModuleType('hermes_cli.plugin_provider_requests')
+                provider.ProviderNotSignedIn = type('ProviderNotSignedIn', (RuntimeError,), {})
+                provider.credentialed_provider_request = None
+                auth = types.ModuleType('hermes_cli.auth_constants')
+                auth.AuthError = type('AuthError', (RuntimeError,), {})
+                stack.enter_context(patch.dict(sys.modules, {
+                    'hermes_cli': host,
+                    'hermes_cli.plugin_provider_requests': provider,
+                    'hermes_cli.auth_constants': auth,
+                }))
+                response = types.SimpleNamespace(status=status, headers={}, body=body,
+                                                 json=lambda: json.loads(body))
+            else:
+                # An installed but broken host must fail, not silently fall back.
+                from hermes_cli import plugin_provider_requests as provider
+                response = provider.ProviderResponse(status, {}, body)
+            transport = stack.enter_context(patch.object(
+                provider, 'credentialed_provider_request', return_value=response))
+            yield transport
+
+    def test_registered_handler_explains_missing_report_target_before_any_effect(self):
+        register(self.ctx)
+        self.addCleanup(lambda: [stop() for stop in self.ctx.unload])
+        args = {'connection': CONNECTION, 'op': 'report', 'key': 'report-1',
+                'text': 'waiting: PRIVATE_REPORT_PAYLOAD'}
+        with patch.object(api, 'request') as request, patch.object(api, 'tool') as tool, patch('hermes.pantheon_native.tools.observe') as session:
+            result = json.loads(self.ctx.tools['pantheon_command']['handler'](args))
+        self.assertEqual(result['error_code'], 'invalid_arguments')
+        self.assertEqual(result['detail']['field'], 'target')
+        self.assertIn("target:'waiting'", result['error'])
+        self.assertIn('not inferred from text', result['error'])
+        self.assertNotIn('PRIVATE_REPORT_PAYLOAD', json.dumps(result))
+        request.assert_not_called(); tool.assert_not_called(); session.assert_not_called()
+
+    def test_catalog_validation_gives_safe_field_paths_and_specific_corrections(self):
+        base = {'connection': CONNECTION, 'op': 'report', 'key': 'report', 'target': 'waiting'}
+        cases = [(None, 'arguments', 'wrong_type'),
+                 ({**base, 'PRIVATE_KEY': 'PRIVATE_VALUE'}, 'arguments', 'unknown_field'),
+                 ({**base, 'op': 'PRIVATE_VALUE'}, 'op', 'invalid_value'),
+                 ({**base, 'target': 123}, 'target', 'wrong_type'),
+                 ({**base, 'target': '   '}, 'target', 'invalid_report_status'),
+                 ({**base, 'usage': {'input_tokens': 1}}, 'usage.output_tokens', 'required'),
+                 ({**base, 'usage': {'input_tokens': -1, 'output_tokens': 0}}, 'usage.input_tokens', 'out_of_range'),
+                 ({**base, 'usage': {'input_tokens': True, 'output_tokens': 0}}, 'usage.input_tokens', 'wrong_type'),
+                 ({**base, 'usage': {'input_tokens': 1, 'output_tokens': 0, 'PRIVATE_KEY': 'PRIVATE_VALUE'}}, 'usage', 'unknown_field'),
+                 ({**base, 'checkpoint': 'PRIVATE_TOKEN'}, 'checkpoint', 'checkpoint_requires_report')]
+        for args, field, reason in cases:
+            with self.subTest(field=field, reason=reason), patch.object(api, 'request') as request, patch('hermes.pantheon_native.tools.observe') as session:
+                result = json.loads(self.tools.call('pantheon_command', args))
+                self.assertEqual(result['error_code'], 'invalid_arguments')
+                self.assertEqual((result['detail']['field'], result['detail']['reason']), (field, reason))
+                self.assertNotEqual(result['error'], 'invalid_arguments')
+                self.assertNotIn('PRIVATE_', json.dumps(result))
+                request.assert_not_called(); session.assert_not_called()
+        from hermes.pantheon_native.tools import validate
+        # Lifecycle/status enums remain authoritative on the server, not guessed locally.
+        validate('pantheon_command', {**base, 'target': 'server_validates_this_status'})
+        validate('pantheon_report', {'connection': CONNECTION, 'key': 'report', 'target': 'waiting',
+                 'text': 'Progress', 'checkpoint': 'signed', 'usage': {'input_tokens': 1, 'output_tokens': 0}})
+
+    def test_real_host_failure_renderer_shows_actionable_text_not_only_code(self):
+        try:
+            from agent.display import _detect_tool_failure
+        except ImportError:
+            self.skipTest('real Hermes display supplied by the isolated host runner')
+        result = self.tools.call('pantheon_command', {'connection': CONNECTION, 'op': 'report',
+                                  'key': 'report', 'text': 'waiting'})
+        failed, visible = _detect_tool_failure('pantheon_command', result)
+        self.assertTrue(failed)
+        self.assertIn('target', visible)
+        self.assertIn('waiting', visible)
+        self.assertNotEqual(visible.strip(' []'), 'invalid_arguments')
+
+    def test_provider_response_preserves_safe_metadata_and_discards_remote_prose(self):
+        from hermes.pantheon_native import errors
+        body = {'error': 'invalid_request', 'detail': {'field': 'target',
+                'reason': 'invalid_report_status', 'instruction': 'PRIVATE_TOKEN raw request'},
+                'rejected_value': 'PRIVATE_PAYLOAD'}
+        with self.provider_response(400, json.dumps(body).encode()) as transport:
+            with self.assertRaises(api.APIError) as caught:
+                api.request('POST', '/connections/' + CONNECTION + '/tools/pantheon_command', {'secret': 'PRIVATE_REQUEST'})
+        error = caught.exception
+        result = errors.result({'ok': False, 'error': error.code}, status=error.status,
+                               metadata=error.detail, server_code=error.server_code)
+        self.assertEqual(result['error_code'], 'invalid_request')
+        self.assertEqual(result['server_error_code'], 'invalid_request')
+        self.assertEqual(result['http_status'], 400)
+        self.assertEqual(result['detail']['reason'], 'invalid_report_status')
+        self.assertIn("target:'waiting'", result['error'])
+        self.assertNotIn('PRIVATE_', json.dumps(result))
+        transport.assert_called_once()
+
+    def test_malformed_oversized_unknown_and_authorization_envelopes_stay_redacted(self):
+        from hermes.pantheon_native import errors
+        cases = [(400, b'PRIVATE_TOKEN not JSON'),
+                 (400, json.dumps({'error': 'invalid_request', 'detail': {'field': 'PRIVATE_FIELD', 'reason': 'required'}}).encode()),
+                 (400, json.dumps({'error': 'invalid_request', 'detail': {'field': 'target', 'reason': 'PRIVATE_REASON'}}).encode()),
+                 (400, json.dumps({'error': 'PRIVATE_TOKEN', 'detail': {'field': 'target', 'reason': 'required'}}).encode()),
+                 (400, json.dumps({'error': 'invalid_request', 'detail': {'field': 'target', 'reason': 'required'}, 'private': 'PRIVATE_'*2000}).encode()),
+                 (403, json.dumps({'error': 'unauthorized', 'detail': {'field': 'target', 'reason': 'required', 'instruction': 'PRIVATE_TOKEN'}}).encode())]
+        for status, body in cases:
+            with self.subTest(status=status, body_length=len(body)), self.provider_response(status, body):
+                with self.assertRaises(api.APIError) as caught: api.request('POST', '/connections', {})
+                error = caught.exception
+                self.assertIsNone(error.detail)
+                result = errors.result({'ok': False, 'error': error.code}, status=error.status,
+                                       metadata=error.detail, server_code=error.server_code)
+                self.assertNotIn('PRIVATE_', json.dumps(result))
+                self.assertNotIn('detail', result)
+
+    def test_server_uncertainty_never_becomes_deterministic_conflict(self):
+        from hermes.pantheon_native import errors
+        with self.provider_response(409, b'{"error":"uncertain"}'):
+            with self.assertRaises(api.APIError) as caught: api.request('POST', '/connections', {})
+        error = caught.exception
+        self.assertEqual(error.code, 'outcome_unknown')
+        result = errors.result({'ok': False, 'error': error.code}, server_code=error.server_code)
+        self.assertEqual(result['server_error_code'], 'uncertain')
+        self.assertIn('identical key and payload', result['error'])
+
+    def test_detailed_server_rejection_reaches_native_handler_without_guessed_cause(self):
+        self.row()
+        error = api.APIError('conflict', 409, detail={'field': 'usage.input_tokens', 'reason': 'usage_decreased'})
+        with patch('hermes.pantheon_native.tools.observe', return_value=SESSION), patch.object(api, 'request', return_value={'grant_id': GRANT}), patch.object(api, 'tool', side_effect=[{'epoch': 3, 'config': 7}, error]) as tool:
+            result = json.loads(self.tools.call('pantheon_command', {'connection': CONNECTION, 'op': 'report', 'key': 'report', 'target': 'working'}))
+        self.assertEqual(result['error_code'], 'conflict')
+        self.assertEqual(result['detail']['field'], 'usage.input_tokens')
+        self.assertIn('cannot decrease', result['error'])
+        self.assertNotIn('definition', result['instruction'])
+        self.assertEqual(tool.call_count, 2)
+
+    def test_literal_api_codes_keep_machine_identity_and_safe_fallback(self):
+        import ast
+        from hermes.pantheon_native import errors
+        for path in (Path(__file__).parents[1] / 'pantheon_native').glob('*.py'):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Call) and getattr(node.func, 'attr', getattr(node.func, 'id', '')) == 'APIError' and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    code = node.args[0].value
+                    result = errors.result({'error': code})
+                    self.assertEqual(result['error_code'], code)
+                    self.assertNotEqual(result['error'], code)
+        future = errors.result({'error': 'future_protocol_error'})
+        self.assertEqual(future['error_code'], 'future_protocol_error')
+        self.assertIn('Check its status', future['error'])
 
 if __name__=='__main__':unittest.main()

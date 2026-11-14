@@ -1,14 +1,17 @@
 """All authenticated transport stays inside the official Hermes OAuth helper."""
 import re
+from . import errors
 
 ORIGIN = "https://pantheon.talk"
 HANDLE = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
 
 
 class APIError(Exception):
-    def __init__(self, code, status=0):
+    def __init__(self, code, status=0, *, detail=None, server_code=None):
         super().__init__(code)
         self.code, self.status = code, status
+        self.detail = errors.detail(detail)
+        self.server_code = server_code
 
 
 def handle(value):
@@ -29,7 +32,25 @@ def request(method, path, body=None):
         if response.status >= 300:
             code = {400: "invalid_request", 401: "sign_in_required", 403: "access_unavailable",
                     404: "not_accepted", 409: "conflict", 410: "closed"}.get(response.status, "unavailable")
-            raise APIError(code, response.status)
+            # Parse only a bounded error envelope; never surface raw bodies or
+            # exception text, which may contain request values or credentials.
+            metadata, server_code = None, None
+            try:
+                body = response.body
+                if isinstance(body, bytes) and len(body) <= 8192:
+                    value = response.json()
+                    allowed = {400: {'invalid_request'}, 403: {'unauthorized'},
+                               409: {'conflict', 'uncertain'}, 410: {'closed'},
+                               503: {'unavailable', 'temporarily_unavailable'}}
+                    if isinstance(value, dict) and value.get('error') in allowed.get(response.status, set()):
+                        server_code = value['error']
+                        if response.status in {400, 409, 503}:
+                            metadata = errors.detail(value.get('detail'))
+                        if server_code == 'uncertain':
+                            code, metadata = 'outcome_unknown', None
+            except Exception:
+                pass  # Malformed envelopes retain safe status-based guidance.
+            raise APIError(code, response.status, detail=metadata, server_code=server_code)
         return response.json()
     except ProviderNotSignedIn:
         raise APIError("sign_in_required") from None

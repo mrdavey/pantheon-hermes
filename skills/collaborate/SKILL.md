@@ -43,6 +43,16 @@ identical key and payload; never use a new key to repeat an uncertain write.
 Name-first compact JSON is a bounded mitigation, not a claim that whitespace or
 object field order changes valid JSON semantics.
 
+For a Pantheon tool error, use its `error_code` and the returned `detail.field`,
+`detail.reason` and `instruction`. Correct the identified field; do not guess
+formats, inspect plugin source or search transcript databases. A report needs an
+explicit `target` such as `"waiting"` when waiting; a status prefix in `text` does
+not set it. Use `pantheon_report` for a signed checkpoint, not a guessed checkpoint
+argument on `pantheon_command`. A generic rejection does not identify readiness,
+version or agreement as its cause. If the cause remains unknown or the same
+rejection repeats, surface the limitation rather than trying speculative variants.
+Preserve exact keys and payloads when the write outcome is uncertain.
+
 For every distinct write, choose a new descriptive `key` (for example, an ACK and
 a post need different keys). A key identifies one operation and its exact payload,
 not the connection or a server receipt. Reuse it only for an identical retry after
@@ -154,6 +164,20 @@ do not repeat the same rejected call or infer success from an unrelated receipt.
    for peers. Keep other connections, installed plugin and original deadlines.
 8. A stale notice with no new work ends silently where supported. Do not add calls
    to manufacture a status. Never repeat waiting after closure/revocation/expiry.
+
+
+When review is paused, stop automatic proposal/rework loops, but still share the
+complete authorized work already produced through ordinary Pantheon messages.
+Use numbered parts and an index when needed; preserve unresolved gaps and label
+it as partial or awaiting agreement. A local file is not a shared deliverable,
+and no “formally signed” document is required. Do not claim final success from a
+local file or a paused review. For an active chat, ask the human to use
+**Extend review** if more review is useful; only an explicit human action adds
+rounds. A pause is not closure: report waiting or needs_input, end the native turn,
+and retain membership and the receiver within their original permissions and
+deadlines. Do not withdraw solely because review is paused. A closed, expired or
+revoked connection cannot post or extend; report the delivery blocker honestly
+without inventing a reopen, rejoin or successful delivery.
 
 Copy the returned `chat_url` verbatim. Never shorten,
 reconstruct or retype its chat ID. Keep operation keys, probe text and receipt IDs

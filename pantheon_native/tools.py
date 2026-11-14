@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
-from . import accounting, api, files, permissions, state
+from . import accounting, api, errors, files, permissions, state
 from .session import observe
 
 CATALOG = json.loads((Path(__file__).parent / "catalog.json").read_text())["tools"]
@@ -63,26 +63,51 @@ def welcome(chat_url):
 
 
 def validate(name, args):
-    # The complete snapshot is checked by jsonschema at build/test time. Runtime
-    # checks reject extra authority selectors before any API or filesystem call.
+    # Follow the shipped catalog, including nested bounds, without relying on
+    # Hermes's optional jsonschema dependency or echoing rejected values.
+    def invalid(field, reason):
+        raise api.APIError("invalid_arguments", detail={'field': field, 'reason': reason})
+
+    def check(value, spec, field):
+        kind = spec.get('type')
+        expected = {'string': str, 'integer': int, 'boolean': bool, 'array': list, 'object': dict}.get(kind)
+        if expected is not None and (not isinstance(value, expected) or (kind == 'integer' and isinstance(value, bool))):
+            invalid(field, 'wrong_type')
+        if 'enum' in spec and value not in spec['enum']:
+            invalid(field, 'invalid_value')
+        if kind == 'integer' and (value < spec.get('minimum', value) or value > spec.get('maximum', value)):
+            invalid(field, 'out_of_range')
+        if kind == 'object':
+            properties = spec.get('properties', {})
+            if spec.get('additionalProperties') is False and set(value) - set(properties):
+                if field == 'arguments' and name == 'pantheon_command' and 'checkpoint' in value:
+                    invalid('checkpoint', 'checkpoint_requires_report')
+                invalid(field, 'unknown_field')
+            for key in spec.get('required', []):
+                path = key if field == 'arguments' else field + '.' + key
+                if key not in value:
+                    invalid(path, 'required')
+            for key, item in value.items():
+                if key in properties:
+                    check(item, properties[key], key if field == 'arguments' else field + '.' + key)
+        elif kind in {'string', 'array'}:
+            minimum = spec.get('minLength' if kind == 'string' else 'minItems', 0)
+            maximum = spec.get('maxLength' if kind == 'string' else 'maxItems', 1_000_000)
+            if len(value) < minimum:
+                invalid(field, 'required')
+            if len(value) > maximum:
+                invalid(field, 'too_long')
+            if kind == 'array':
+                for item in value:
+                    check(item, spec.get('items', {}), field + '[]')
+
     schema = SCHEMAS[name]["inputSchema"]
-    if not isinstance(args, dict) or set(args) - set(schema["properties"]) or set(schema.get("required", [])) - set(args):
-        raise api.APIError("invalid_arguments")
-    for key, value in args.items():
-        spec = schema["properties"][key]
-        kind = spec["type"]
-        expected = {"string": str, "integer": int, "boolean": bool, "array": list, "object": dict}[kind]
-        if not isinstance(value, expected) or (kind == "integer" and isinstance(value, bool)):
-            raise api.APIError("invalid_arguments")
-        if key == "usage" and (args.get("op") != "report" or set(value) != {"input_tokens", "output_tokens"}
-                               or any(type(count) is not int or not 0 <= count <= 10**12 for count in value.values())):
-            raise api.APIError("invalid_arguments")
-        if "enum" in spec and value not in spec["enum"]:
-            raise api.APIError("invalid_arguments")
-        if kind in {"string", "array"} and not spec.get("minItems", 0) <= len(value) <= spec.get("maxLength", spec.get("maxItems", 1_000_000)):
-            raise api.APIError("invalid_arguments")
-        if kind == "array" and any(not isinstance(item, str) for item in value):
-            raise api.APIError("invalid_arguments")
+    check(args, schema, 'arguments')
+    report = name == 'pantheon_report' or (name == 'pantheon_command' and args.get('op') == 'report')
+    if report and not args.get('target', '').strip():
+        invalid('target', 'invalid_report_status')
+    if 'usage' in args and not report:
+        invalid('usage', 'report_only')
     if name == "pantheon_command" and args.get("op") == "confirm":
         if args.get("source", "") not in {"", "disagree"}:
             raise api.APIError("confirm_source_invalid")
@@ -151,7 +176,10 @@ class Tools:
         try:
             validate(name, args)
             session = observe(self.ctx, session_id)
-            return json.dumps(self.dispatch(name, args, session), ensure_ascii=False)
+            value = self.dispatch(name, args, session)
+            if isinstance(value, dict) and value.get('ok') is False and 'error' in value:
+                value = errors.result(value)
+            return json.dumps(value, ensure_ascii=False)
         except api.APIError as error:
             result = {"ok": False, "error": error.code}
             if error.code == "coordination_unavailable":
@@ -160,12 +188,11 @@ class Tools:
                 result["instruction"] = "An earlier report has an uncertain outcome. Reconcile or retry that exact key and payload before reporting newer totals. Never replace it with a new key."
             if error.code in CONFIRM_ERRORS:
                 result["instruction"] = CONFIRM_ERRORS[error.code] + " " + CONFIRM_INSTRUCTION
-            elif name in {"pantheon_command", "pantheon_report", "pantheon_opening"} and error.code in {"invalid_arguments", "invalid_request", "conflict"}:
+            elif name in {"pantheon_command", "pantheon_report", "pantheon_opening"} and error.code in {"invalid_arguments", "invalid_request", "conflict"} and error.detail is None:
                 result["instruction"] = (
-                    "Do not blindly retry. Read pantheon_chat; check current readiness, definition/result agreement, "
-                    "versions and whether the key was already used for a different payload. "
-                    "Report waiting while required definition confirmations are outstanding; working requires readiness "
-                    "and definition agreement. Use a new key for a corrected operation, never to replay an uncertain write."
+                    "Do not blindly retry. Check the current tool schema and the latest chat/operation state. "
+                    "No specific cause was provided; do not guess readiness, versions or agreement. "
+                    "Use a new key only for a distinct corrected operation, never to replay an uncertain write."
                 )
                 if isinstance(args, dict) and args.get("op") == "confirm":
                     result["instruction"] += " " + CONFIRM_INSTRUCTION
@@ -184,9 +211,11 @@ class Tools:
                 )
             if error.code in {"file_path_not_allowed", "session_workspace_required"}:
                 result["instruction"] = "Uploads and site bundles require nonsecret files in this session's workspace. Downloads and durable ACKs require Pantheon's profile downloads directory, reported by pantheon_doctor. Never copy credentials, change the workspace, or use another tool to bypass these restrictions."
-            return json.dumps(result)
+            return json.dumps(errors.result(result, status=error.status, metadata=error.detail,
+                                           server_code=error.server_code))
         except Exception:
-            return json.dumps({"ok": False, "error": "local_operation_failed", "instruction": "Use pantheon_doctor. Do not repeat an uncertain write with a new key."})
+            return json.dumps(errors.result({"ok": False, "error": "local_operation_failed",
+                "instruction": "Use pantheon_doctor. Do not repeat an uncertain write with a new key."}))
 
     def dispatch(self, name, args, session):
         if name in {"pantheon_connect", "pantheon_resume"}:
@@ -223,7 +252,7 @@ class Tools:
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
                     "downloads_directory": str(files.download_root()),
                     "usage_capability": "public_hooks_partial", "usage_attribution": "exact_native_wake_turns",
-                    "version": "1.0.13"}
+                    "version": "1.0.14"}
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
