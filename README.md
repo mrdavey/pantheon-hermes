@@ -29,15 +29,16 @@ ready setup do not repeat the setup confirmation.
 The agent launches the native installer on the computer running Desktop. On macOS:
 
 ```sh
-open 'hermes://plugin/install?repo=mrdavey/pantheon-hermes&enable=1'
+open 'hermes://plugin/install?catalog=pantheon&enable=1'
 ```
 
 On Linux, use `xdg-open` with the same URL when a desktop handler is available.
 Keep **Agent** and **Desktop** selected in the native approval dialog. The URL
 contains no invitation. Hermes chat can block custom-scheme links, so displaying
 a link alone is insufficient. If launching fails, the agent reports that failure
-and gives **Capabilities → Plugins → Install from Git** with
-`https://github.com/mrdavey/pantheon-hermes.git` as the fallback.
+and gives **Capabilities → Plugins**: find **Pantheon** in the catalogue and
+choose **Install**. If the catalogue is unavailable, retry later; do not substitute
+a Git URL.
 
 For an existing installation, use native update controls. If it was installed
 through the CLI, enable **Desktop** on Pantheon's card in **Capabilities → Plugins**
@@ -45,16 +46,52 @@ once. An explicit disabled choice remains yours; the plugin never overrides it.
 
 ## CLI or TUI
 
-Without Desktop, install from the default branch using Hermes native controls:
+Without Desktop, install the latest reviewed catalogue release:
 
 ```sh
-hermes plugins install https://github.com/mrdavey/pantheon-hermes.git
+hermes plugins install pantheon
 hermes plugins enable pantheon
 ```
 
-This is a direct Git release, not a Hermes catalogue listing. Production readiness
+Pantheon is listed in the Hermes catalogue. Production readiness
 and available operations are reported by Pantheon discovery; installation alone
 does not prove end-to-end collaboration.
+
+## Updates and migration from Git
+
+Use Pantheon's native update control or `hermes plugins update pantheon`.
+Catalogue installations follow the latest reviewed release. Reuse the installed
+plugin for invitations; migration is separate maintenance.
+
+To switch an existing Git installation, first inspect `hermes plugins info pantheon`
+and compare versions. Wait if Git is newer than the catalogue. Review any local
+code changes or custom source separately. Keep the same profile and conversation,
+and finish the current turn before replacing the package.
+
+On Desktop, open the catalogue installer above and confirm replacement using the
+native controls. Preserve the current **Agent** and **Desktop** selections,
+including a disabled half. If the host cannot replace it, stop and report that
+limitation. Do not uninstall to work around it.
+
+For CLI/TUI, run this once yourself in your terminal:
+
+```sh
+hermes plugins install pantheon --force
+```
+
+`--force` replaces the existing plugin and can accept scanner cautions. Review the
+native prompts; agents must not use it to bypass a refusal. Decline **Enable** if
+previously disabled. Do not add `--enable` or choose a commit. For a named profile,
+use `hermes --profile <profile>` for every command.
+
+Do not uninstall, sign out, disconnect chats, delete plugin data or edit credential
+files. After migration, check catalogue provenance with `hermes plugins info pantheon`,
+confirm your enabled/disabled and incoming-reply choices, run
+`hermes auth status pantheon:pantheon`, and check saved connections in Pantheon's
+panel or `pantheon_status`. Reuse valid sign-in. Refresh tools through native
+controls and reopen the same conversation if needed. Saved connections keep their
+original consent and deadlines; reload can briefly interrupt incoming replies.
+Expired or revoked connections still require their normal recovery flow.
 
 ## Sign in and join
 
@@ -118,6 +155,9 @@ credentialed request helper. The server never receives your model-provider keys.
 Local profile storage contains connection/session IDs, deadlines, operation IDs,
 digests and wake dispositions. It contains no invitations, OAuth tokens, payload
 URLs or transcripts. Session APIs read routing metadata only, not messages.
+Current Hermes uses its public read-only storage interface for the active profile;
+Hermes releases without that interface retain the read-only SessionDB adapter.
+Storage failures never fall back to another profile or storage interface.
 Uploads and static site bundles read only regular, non-hardlinked files within
 the host-recorded session workspace. Hidden files, credential paths and Hermes
 profile data are refused, including paths through symlinks outside the workspace.
@@ -161,10 +201,8 @@ source testing, install it with `python -m pip install ruamel.yaml==0.18.16`.
 
 Supported hosts: Linux and macOS. Windows file tools are not supported.
 
-After catalogue acceptance, install by catalogue name (`hermes plugins install
-pantheon`) or `hermes://plugin/install?catalog=pantheon`. Catalogue updates use
-reviewed SHA-bump entries; Git installs track the default branch. The plugin
-never replaces its own source.
+Catalogue updates use reviewed entries; Git installs track the default branch
+until explicitly migrated. The plugin never replaces its own source.
 
 Chat contents and explicitly selected file/site payloads are sent to Pantheon.
 Up to 20 daemon receiver threads per instance poll at five-second intervals within

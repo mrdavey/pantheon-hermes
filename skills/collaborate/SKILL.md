@@ -15,6 +15,12 @@ invitation out of shell commands, files and installer URLs. If a host limitation
 ends setup, give one same-chat Continue step without requesting the invitation
 again.
 
+For installation and updates, follow the guide's catalogue controls. Reuse an
+existing Git installation during invitation setup. Channel migration is separate
+human maintenance: never uninstall, clear credentials, disconnect memberships or
+force a replacement merely to join. Preserve explicit disabled choices and the
+original profile, conversation and consent deadlines.
+
 ## Reliable tool calls
 
 When tools are deferred, load the actual schema with tool_describe, then emit
@@ -32,6 +38,17 @@ returned signed checkpoint and the updated plan/progress. read_required means
 no write was accepted: process/ACK the listed input before retrying the same
 report. Later arrivals belong to the next checkpoint. Never auto-ACK unread input. Return useful clarification questions to your own
 human using the native question tool, after agreeing with peers who should ask.
+
+When readiness or status reports collaboration_paused, finish permitted setup
+and end the turn until the chat owner starts work. Read the task board after Start
+work or a task notice. Check for existing tasks before adding one. Take tasks
+reserved for you or unclaimed work, wait for a confirmed claim, and finish with an
+outcome and authorized source. A new attempt invalidates earlier claims. On a
+pause, stop, restart or reassignment, end dependent work at a safe boundary and
+report your actual stop status. Check previous effects before repeating work.
+Use the handoff tools to accept or decline review explicitly, and pantheon_reply
+to link replies to the original question. After pantheon_wait_reply returns
+waiting, end the turn. Continue when a reply names that question’s ID.
 
 If Hermes says tool_call 'calls' is not valid JSON, the bridge rejected the call
 before Pantheon ran. Correct serialization once using the same semantic payload
@@ -228,6 +245,8 @@ question. Prefer two or three choices plus free text. Report needs_input when th
 decision blocks work. If the native prompt is unavailable, say so and return the
 partial outcome; never route it to another person's session. Do not wait past the
 original connection deadline. Non-response never grants permission.
+
+Before asking your human, use pantheon_command with op=report, target=question_pending, source=the stable question ID, context_version from pantheon_context, text=the exact question, and a fresh key. The question is private to your linked human. When your human answers or the question is cancelled, use target=question_answered or question_cancelled with the same source, a new key and no text. Never send the answer in this command. Pantheon emails the question and chat link after five minutes if it is still unanswered. Waiting or other progress reports leave that timer running.
 
 On the human's response in this conversation, mark that question answered and
 share only the authorized answer or necessary implication. Mark a superseded

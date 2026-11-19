@@ -637,7 +637,7 @@ class NativeTests(unittest.TestCase):
             def get_session_list_row(self,session):return {'source':'subagent'}
             def get_conversation_root(self,session):calls.append('lineage');return 'parent'
             def close(self):calls.append('close')
-        with patch.dict(sys.modules,{'gateway':types.ModuleType('gateway'),'gateway.session_context':types.SimpleNamespace(get_session_env=lambda name:'s'),'hermes_state':types.SimpleNamespace(SessionDB=DB)}):
+        with patch.dict(sys.modules,{'gateway':types.ModuleType('gateway'),'gateway.session_context':types.SimpleNamespace(get_session_env=lambda name:'s'),'persistence_assembly':None,'hermes_state':types.SimpleNamespace(SessionDB=DB)}):
             with self.assertRaises(api.APIError):observe(self.ctx,'child')
         self.assertEqual(calls,['close'])
     def test_desktop_storage_normalization_preserves_connection_binding(self):
@@ -649,7 +649,7 @@ class NativeTests(unittest.TestCase):
             def close(self): pass
         modules = {'gateway': types.ModuleType('gateway'),
                    'gateway.session_context': types.SimpleNamespace(get_session_env=lambda name: 'native-route'),
-                   'hermes_state': types.SimpleNamespace(SessionDB=DB)}
+                   'persistence_assembly': None, 'hermes_state': types.SimpleNamespace(SessionDB=DB)}
         with patch.dict(sys.modules, modules):
             initial = observe(self.ctx, 'native-session')
             row['source'] = 'local'
@@ -665,7 +665,7 @@ class NativeTests(unittest.TestCase):
             def close(self): pass
         modules = {'gateway': types.ModuleType('gateway'),
                    'gateway.session_context': types.SimpleNamespace(get_session_env=lambda name: 'native-route'),
-                   'hermes_state': types.SimpleNamespace(SessionDB=DB)}
+                   'persistence_assembly': None, 'hermes_state': types.SimpleNamespace(SessionDB=DB)}
         with patch.dict(sys.modules, modules):
             for surface in ('acp', 'telegram', '', 'unknown'):
                 with self.subTest(surface=surface), patch.object(self.ctx, 'session_surface', return_value=surface):
@@ -678,18 +678,72 @@ class NativeTests(unittest.TestCase):
                 row[flag] = 1
                 with self.subTest(flag=flag), self.assertRaises(api.APIError): observe(self.ctx, 'native-session')
                 row[flag] = 0
+    def test_public_storage_reads_current_profile_metadata_before_lineage(self):
+        calls = []
+        row = types.SimpleNamespace(source='local', hidden=False, archived=False)
+        profile_dir = Path(self.temp.name) / 'profiles' / 'named'
+        def get_row(session_id):
+            calls.append(('row', session_id))
+            return row
+        def get_root(session_id):
+            calls.append(('root', session_id))
+            return 'conversation-root'
+        @contextlib.contextmanager
+        def reader(target):
+            self.assertEqual(target, profile_dir)
+            calls.append('open')
+            try:
+                yield types.SimpleNamespace(sessions=types.SimpleNamespace(list_row=get_row),
+                                            lineage=types.SimpleNamespace(conversation_root=get_root))
+            finally:
+                calls.append('close')
+        modules = {'gateway': types.ModuleType('gateway'),
+                   'gateway.session_context': types.SimpleNamespace(get_session_env=lambda name: 'native-route'),
+                   'hermes_state': None,
+                   'persistence_assembly': types.SimpleNamespace(open_persistence_reader=reader,
+                       profile_scope=lambda: types.SimpleNamespace(profile_dir=profile_dir))}
+        with patch.dict(sys.modules, modules):
+            self.assertEqual(observe(self.ctx, 'native-session')['id'], 'conversation-root')
+            self.assertEqual(calls, ['open', ('row', 'native-session'), ('root', 'native-session'), 'close'])
+            for source, hidden, archived in [('subagent', False, False), ('local', True, False), ('local', False, True)]:
+                calls.clear()
+                row.source, row.hidden, row.archived = source, hidden, archived
+                with self.subTest(source=source, hidden=hidden, archived=archived), self.assertRaises(api.APIError):
+                    observe(self.ctx, 'native-session')
+                self.assertEqual(calls, ['open', ('row', 'native-session'), 'close'])
+            calls.clear()
+            row = None
+            with self.assertRaises(api.APIError): observe(self.ctx, 'missing')
+            self.assertEqual(calls, ['open', ('row', 'missing'), 'close'])
+    def test_public_storage_failure_never_falls_back_to_legacy(self):
+        def fail(target): raise RuntimeError('storage unavailable')
+        legacy = types.SimpleNamespace(SessionDB=lambda **kw: self.fail('unsafe fallback'))
+        storage = types.SimpleNamespace(open_persistence_reader=fail,
+            profile_scope=lambda: types.SimpleNamespace(profile_dir=Path(self.temp.name)))
+        with patch.dict(sys.modules, {'gateway': types.ModuleType('gateway'),
+                'gateway.session_context': types.SimpleNamespace(get_session_env=lambda name: 's'),
+                'hermes_state': legacy, 'persistence_assembly': storage}):
+            with self.assertRaisesRegex(RuntimeError, 'storage unavailable'): observe(self.ctx, 's')
     def test_real_host_desktop_metadata_when_available(self):
         try:
-            from hermes_state import SessionDB
             from gateway.session_context import scoped_session_key
         except ImportError:
             self.skipTest('real Hermes host supplied by the isolated contract runner')
         # The contract runner supplies a disposable profile. Never use owner state.
         import os
         with patch.dict(os.environ, {'HERMES_HOME': self.temp.name}):
-            db = SessionDB()
-            try: db.create_session('native-desktop-fixture', source='gui')
-            finally: db.close()
+            try:
+                from persistence_assembly import open_persistence, profile_scope
+            except ModuleNotFoundError as error:
+                if error.name != 'persistence_assembly': raise
+                from hermes_state import SessionDB
+                db = SessionDB()
+                try: db.create_session('native-desktop-fixture', source='gui')
+                finally: db.close()
+            else:
+                from persistence.conversation.sessions import NewSession
+                with open_persistence(profile_scope()) as store:
+                    store.sessions.create(NewSession('native-desktop-fixture', source='gui'))
             with scoped_session_key('native-desktop-route'):
                 result = observe(self.ctx, 'native-desktop-fixture')
         self.assertEqual(result['surface'], 'desktop')

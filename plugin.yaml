@@ -1,5 +1,5 @@
 name: pantheon
-version: 1.0.14
+version: 1.0.16
 description: Join Pantheon chats with native OAuth and conversation-scoped collaboration tools.
 author: Pantheon
 requires_hermes: '>=0.23.1'
@@ -31,6 +31,19 @@ provides_tools:
 - pantheon_transfer_fetch
 - pantheon_transfer_inspect
 - pantheon_transfer_send
+- pantheon_task_list
+- pantheon_task_create
+- pantheon_task_take
+- pantheon_task_release
+- pantheon_task_finish
+- pantheon_task_cancel
+- pantheon_work_stop_status
+- pantheon_handoff_list
+- pantheon_handoff_request
+- pantheon_handoff_accept
+- pantheon_handoff_decline
+- pantheon_reply
+- pantheon_wait_reply
 provides_hooks:
 - post_api_request
 - post_auxiliary_call

@@ -246,13 +246,27 @@ class Tools:
             grant = identity()
             local = state.rows("connection")
             incoming = permissions.current()
-            return {"ok": True, "signed_in": True, "incoming": incoming is True,
+            result = {"ok": True, "signed_in": True, "incoming": incoming is True,
                     "incoming_setting": permissions.setting(incoming), "incoming_preference": permissions.mode(),
                     "connections": sum(row["grant"] == grant and row["session"] == session and row["state"] != "disconnected" for row in local),
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
                     "downloads_directory": str(files.download_root()),
                     "usage_capability": "public_hooks_partial", "usage_attribution": "exact_native_wake_turns",
-                    "version": "1.0.14"}
+                    "version": "1.0.16"}
+            if incoming is not True:
+                result["connection_check"] = {"status": "incoming_replies_disabled", "next_action": "Enable Pantheon’s incoming replies in this Hermes profile, then continue in this conversation."}
+            elif "connection" in args:
+                connection = api.handle(args["connection"])
+                row = state.get("connection", connection)
+                if row is None or row["session"] != session or row["grant"] != grant:
+                    raise api.APIError("connection_not_bound_use_explicit_resume")
+                verified = api.tool(connection, session, "pantheon_chat_state", {"connection": connection})
+                readiness = verified.get("readiness")
+                action = "Read and acknowledge the current brief and readiness probe in this conversation." if readiness == "incoming_unverified" else ""
+                if readiness == "ready" and verified.get("collaboration_paused"):
+                    action = "Wait for the chat owner to press Start work."
+                result["connection_check"] = {"status": readiness or "membership_verified", "next_action": action}
+            return result
         if name in {"pantheon_connect", "pantheon_resume"}:
             if args.get("deliberate") is not True:
                 raise api.APIError("deliberate_invitation_required")
@@ -331,10 +345,11 @@ class Tools:
         if report:
             state.report_pending(connection, args["key"])
         values = dict(args)
-        if name in {"pantheon_ack", "pantheon_ack_ready", "pantheon_post", "pantheon_command", "pantheon_report", "pantheon_opening"}:
+        task_write = name in {"pantheon_task_create", "pantheon_task_take", "pantheon_task_release", "pantheon_task_finish", "pantheon_task_cancel", "pantheon_work_stop_status", "pantheon_handoff_request", "pantheon_handoff_accept", "pantheon_handoff_decline", "pantheon_reply", "pantheon_wait_reply"}
+        if name in {"pantheon_ack", "pantheon_ack_ready", "pantheon_post", "pantheon_command", "pantheon_report", "pantheon_opening"} or task_write:
             status = api.tool(connection, session, "pantheon_chat_state", {"connection": connection})
             state.update("connection", connection, {"opening": status.get("opening")})
-            if name in {"pantheon_report", "pantheon_opening"} or values.get("op") == "report":
+            if name in {"pantheon_report", "pantheon_opening"} or values.get("op") == "report" or task_write:
                 values.update(state.write_preconditions(connection, name, args, status))
             else:
                 values.update(epoch=status["epoch"], config=status["config"])
