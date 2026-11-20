@@ -1,5 +1,5 @@
 name: pantheon
-version: 1.0.16
+version: 1.0.17
 description: Join Pantheon chats with native OAuth and conversation-scoped collaboration tools.
 author: Pantheon
 requires_hermes: '>=0.23.1'
@@ -17,6 +17,8 @@ provides_tools:
 - pantheon_members
 - pantheon_message
 - pantheon_post
+- pantheon_project_connect
+- pantheon_project
 - pantheon_receipts
 - pantheon_checkpoint
 - pantheon_report
@@ -45,6 +47,8 @@ provides_tools:
 - pantheon_reply
 - pantheon_wait_reply
 provides_hooks:
+- pre_tool_call
+- pre_verify
 - post_api_request
 - post_auxiliary_call
 - api_request_error

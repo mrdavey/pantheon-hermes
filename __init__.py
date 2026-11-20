@@ -1,6 +1,6 @@
 """Pantheon native plugin entrypoint: registration is inert and network-free."""
 from pathlib import Path
-from .pantheon_native import api, state, accounting
+from .pantheon_native import api, state, accounting, project_work_runtime
 from .pantheon_native.runtime import Runtime
 from .pantheon_native.session import observe
 from .pantheon_native.tools import CATALOG, Tools
@@ -49,9 +49,14 @@ def register(ctx):
             if known and known["profile"] == ctx.profile_name:
                 runtime.finish(known, terminal_only=False)
 
-    def turn_ended(*, session_id=None, **kwargs):
+    def turn_ended(*, session_id=None, turn_exit_reason="", interrupted=False, **kwargs):
         try:
-            runtime.turn(observe(ctx, session_id), False)
+            session = observe(ctx, session_id)
+            runtime.turn(session, False)
+            if not interrupted:
+                runtime.continue_project(session, wait_for_tasks=True)
+            if not interrupted and isinstance(turn_exit_reason, str) and turn_exit_reason.startswith("max_iterations_reached("):
+                runtime.continue_project(session)
         except api.APIError:
             pass
 
@@ -67,6 +72,28 @@ def register(ctx):
         except Exception:
             pass  # Accounting must never start/retry work or break native delivery.
 
+    def before_tool(*, session_id=None, tool_name="", **kwargs):
+        try:
+            if not session_id or not state.get("session", session_id):
+                return None
+            message = project_work_runtime.gate(observe(ctx, session_id), tool_name)
+            if message:
+                return {"action": "block", "message": message}
+        except api.APIError:
+            return None
+
+    def before_finish(*, session_id=None, attempt=0, **kwargs):
+        try:
+            if not session_id or not state.get("session", session_id):
+                return None
+            message = project_work_runtime.before_finish(observe(ctx, session_id), attempt)
+            if message:
+                return {"action": "continue", "message": message}
+        except api.APIError:
+            return None
+
+    ctx.register_hook("pre_tool_call", before_tool)
+    ctx.register_hook("pre_verify", before_finish)
     ctx.register_hook("post_api_request", measured)
     ctx.register_hook("post_auxiliary_call", measured)
     ctx.register_hook("api_request_error", measured)

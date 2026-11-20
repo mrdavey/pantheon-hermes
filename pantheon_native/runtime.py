@@ -2,7 +2,7 @@
 import contextvars
 from datetime import datetime
 import threading
-from . import api, state, permissions
+from . import api, state, permissions, project_work_runtime
 
 
 def deadline(row):
@@ -21,6 +21,8 @@ class Runtime:
         self.lock = threading.Lock()
         self.workers = {}
         self.reopening = {}
+        self.project_wakes = {}
+        self.project_continuations = {}
         self.threads = set()
         self.active_turns = set()
         self.closed = False
@@ -54,6 +56,10 @@ class Runtime:
                 stop.set()
             for stop in self.reopening.values():
                 stop.set()
+            for stop in self.project_wakes.values():
+                stop.set()
+            for stop in self.project_continuations.values():
+                stop.set()
             workers = list(self.threads)
         for worker in workers:
             if worker is not threading.current_thread():
@@ -61,6 +67,8 @@ class Runtime:
 
     def schedule_reopen(self, session):
         """Bounded recovery outside the host hook; preserve its profile context."""
+        self.observe_project_wakes(session)
+        self.continue_project(session, wait_for_tasks=True)
         key = (session['profile'], session['id'])
         with self.lock:
             if self.closed or key in self.reopening or len(self.reopening) >= 20:
@@ -214,6 +222,116 @@ class Runtime:
         for row in state.rows("connection"):
             if row["session"] == session and row.get("state") not in {"disconnected", "revoked"}:
                 self.start(row)
+
+    def continue_project(self, session, wait_for_tasks=False):
+        row = project_work_runtime.focused(session)
+        if not row or session["surface"] not in {"desktop", "tui"}:
+            return
+        waiting = row.get("next") == "wait_for_tasks"
+        if waiting != wait_for_tasks:
+            return
+        connection = row["connection"]
+        with self.lock:
+            if self.closed or connection in self.project_continuations or len(self.project_continuations) >= 20:
+                return
+            stop = threading.Event()
+            scope = contextvars.copy_context()
+
+            def deliver():
+                try:
+                    if wait_for_tasks:
+                        def idle():
+                            with self.lock:
+                                return (session["profile"], session["id"]) not in self.active_turns
+                        project_work_runtime.wait_for_tasks(self.ctx, session, connection, stop, idle)
+                    else:
+                        project_work_runtime.continue_once(self.ctx, session, connection, stop)
+                finally:
+                    with self.lock:
+                        self.project_continuations.pop(connection, None)
+                        self.threads.discard(threading.current_thread())
+
+            worker = threading.Thread(
+                target=lambda: scope.run(deliver), daemon=True, name="pantheon-project-continuation",
+            )
+            self.project_continuations[connection] = stop
+            self.threads.add(worker)
+            worker.start()
+
+    def observe_project_wakes(self, session):
+        if session["surface"] not in {"desktop", "tui"}:
+            return  # CLI native injection is not addressed by the supplied route.
+        import time
+        for row in state.rows("project"):
+            if row.get("session") != session or not row.get("connection") or not row.get("wake_until"):
+                continue
+            if row.get("left") or datetime.fromisoformat(row["wake_until"].replace("Z", "+00:00")).timestamp() <= time.time():
+                continue
+            connection = row["connection"]
+            with self.lock:
+                if self.closed or connection in self.project_wakes or len(self.project_wakes) >= 20:
+                    continue
+                stop = threading.Event()
+                captured = contextvars.copy_context()
+                worker = threading.Thread(target=lambda connection=connection, stop=stop, ctx=captured:
+                                          ctx.run(self.wait_project_wake, session, connection, stop),
+                                          daemon=True, name="pantheon-project-mentions")
+                self.project_wakes[connection] = stop
+                self.threads.add(worker)
+                worker.start()
+
+    def wait_project_wake(self, session, connection, stop):
+        import time
+        try:
+            while not stop.is_set():
+                row = state.get("project", connection)
+                if not row or row.get("left") or row.get("session") != session:
+                    return
+                until = datetime.fromisoformat(row["wake_until"].replace("Z", "+00:00")).timestamp()
+                if time.time() >= until or permissions.current() is not True:
+                    return
+                with self.lock:
+                    active = (session["profile"], session["id"]) in self.active_turns
+                if active:
+                    stop.wait(min(5, max(0, until - time.time())))
+                    continue
+                try:
+                    response = project_work_runtime.call(connection, session, "wake_wait", {
+                        "after": row.get("last_notice", ""),
+                    })
+                    if response.get("exhausted"):
+                        return
+                    notice = response.get("id")
+                    if not notice:
+                        stop.wait(min(5, max(0, until - time.time())))
+                        continue
+                    state.update("project", connection, {"last_notice": notice})
+                    if stop.is_set() or time.time() >= until or permissions.current() is not True:
+                        return
+                    while True:
+                        with self.lock:
+                            if (session["profile"], session["id"]) not in self.active_turns:
+                                break
+                        if stop.wait(3) or time.time() >= until or permissions.current() is not True:
+                            return
+                    send = project_work_runtime.call(connection, session, "wake_try", {"id": notice})
+                    if send.get("send") is not True or stop.is_set() or permissions.current() is not True:
+                        continue
+                    queued = self.ctx.inject_message(
+                        "Pantheon project mention for " + connection
+                        + ". Read pending requests with pantheon_project mentions before acting.",
+                        session_key=session["route"],
+                    )
+                    if queued:
+                        project_work_runtime.call(connection, session, "wake_queued", {"id": notice})
+                except api.APIError as error:
+                    if error.code in {"access_unavailable", "sign_in_required", "native_auth_unavailable", "closed"}:
+                        return
+                    stop.wait(min(5, max(0, until - time.time())))
+        finally:
+            with self.lock:
+                self.project_wakes.pop(connection, None)
+                self.threads.discard(threading.current_thread())
 
     def finish(self, session, terminal_only=True):
         for row in state.rows("connection"):

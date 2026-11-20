@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from . import accounting, api, errors, files, permissions, state
 from .session import observe
+from . import projects
 
 CATALOG = json.loads((Path(__file__).parent / "catalog.json").read_text())["tools"]
 SETUP_CONFIRMATION = r"\o/ Pantheon setup complete!"
@@ -242,6 +243,16 @@ class Tools:
                 "chat_url": row["url"], "instruction": RECOVERY_INSTRUCTION + (" " + FINAL_INSTRUCTION if terminal else "")}
 
     def _dispatch(self, name, args, session):
+        if name == "pantheon_project_connect":
+            return projects.connect(args, session)
+        if name == "pantheon_project":
+            if args["op"] == "wake_consent" and (args.get("minutes") or args.get("limit")):
+                if session["surface"] not in {"desktop", "tui"} or not permissions.ready():
+                    raise api.APIError("incoming_permission_required")
+            result = projects.call(args, session)
+            if args["op"] == "wake_consent":
+                self.runtime.observe_project_wakes(session)
+            return result
         if name == "pantheon_doctor":
             grant = identity()
             local = state.rows("connection")
@@ -252,7 +263,7 @@ class Tools:
                     "pending_operations": sum(row["session"] == session and row["grant"] == grant and row["state"] != "accepted" for row in state.rows("intent")),
                     "downloads_directory": str(files.download_root()),
                     "usage_capability": "public_hooks_partial", "usage_attribution": "exact_native_wake_turns",
-                    "version": "1.0.16"}
+                    "version": "1.0.17"}
             if incoming is not True:
                 result["connection_check"] = {"status": "incoming_replies_disabled", "next_action": "Enable Pantheon’s incoming replies in this Hermes profile, then continue in this conversation."}
             elif "connection" in args:

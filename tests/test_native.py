@@ -24,7 +24,7 @@ if 'hermes' not in sys.modules:
     spec=importlib.util.spec_from_file_location('hermes',root/'__init__.py',submodule_search_locations=[str(root)])
     module=importlib.util.module_from_spec(spec);sys.modules['hermes']=module;spec.loader.exec_module(module)
 from hermes import register
-from hermes.pantheon_native import api, files, state, permissions
+from hermes.pantheon_native import api, files, state, permissions, projects, project_work_runtime
 from hermes.pantheon_native.runtime import Runtime
 from hermes.pantheon_native.session import observe
 from hermes.pantheon_native import accounting
@@ -182,6 +182,136 @@ class NativeTests(unittest.TestCase):
                          (Path(__file__).parents[1]/'skills/collaborate/SKILL.md').read_text())
         for item in self.ctx.tools.values():
             self.assertFalse({'session','profile','token','authorization'} & set(item['schema']['parameters']['properties']))
+    def test_project_tools_use_only_the_original_native_binding(self):
+        project, member, proof = 'a' * 32, 'b' * 32, 'a' * 32 + '.' + 'A' * 43
+        returned = {'project': {'id': project}, 'member': {'id': member}}
+        with patch.object(api, 'request', return_value=returned) as transport:
+            linked = projects.connect({'invitation': proof, 'name': 'Reviewer', 'deliberate': True}, SESSION)
+            transport.assert_called_once_with('POST', '/projects/join', {
+                'session': SESSION, 'invitation': proof, 'name': 'Reviewer', 'deliberate': True,
+            })
+        handle = linked['connection']
+        self.assertEqual(linked['url'], api.ORIGIN + '/app?project=' + project)
+        self.assertNotIn(proof, json.dumps(state.get('project', handle)))
+        path = '/projects/' + project + '/members/' + member
+        with patch.object(api, 'request', return_value={'assignment': None}) as transport:
+            with self.assertRaises(api.APIError):
+                projects.call({'connection': handle, 'op': 'status'}, {**SESSION, 'route': 'other'})
+            transport.assert_not_called()
+            projects.call({'connection': handle, 'op': 'status'}, SESSION)
+            transport.assert_called_once_with('POST', path + '/status', {'session': SESSION})
+        with patch.object(api, 'request', return_value={'next': 'list_tasks'}):
+            finish = projects.call({'connection': handle, 'op': 'work', 'work': {'op': 'finish_task'}}, SESSION)
+            self.assertIn('claim an eligible task', finish['instruction'])
+        with patch.object(api, 'request', return_value={'left': True}) as transport:
+            projects.call({'connection': handle, 'op': 'leave'}, SESSION)
+            with self.assertRaises(api.APIError):
+                projects.call({'connection': handle, 'op': 'status'}, SESSION)
+            transport.assert_called_once_with('POST', path + '/leave', {'session': SESSION})
+
+    def test_project_hooks_check_authority_and_acknowledge_at_safe_boundary(self):
+        register(self.ctx)
+        connection = "a" * 32 + "." + "b" * 32
+        server = {
+            "workHooks": True,
+            "project": {"id": "a" * 32, "closed": False, "boardPaused": False, "objectiveVersion": 1},
+            "assignment": {"id": "assignment", "state": "running", "version": 1, "objectiveVersion": 1,
+                           "checkInDue": "2099-01-01T00:00:00Z", "scope": "task"},
+        }
+        state.put("session", SESSION["id"], {"id": SESSION["id"], "profile": SESSION["profile"]})
+        calls = []
+
+        def request(method, path, body):
+            calls.append((method, path, body))
+            if path.endswith("/status"):
+                return server
+            self.assertTrue(path.endswith("/work"))
+            self.assertEqual(body["command"]["op"], "ack_control")
+            self.assertEqual(body["command"]["expected"], 2)
+            self.assertEqual(body["command"]["controlStatus"], "confirmed")
+            server["assignment"]["controlStatus"] = "confirmed"
+            return {"next": "wait"}
+
+        def tool(name):
+            return self.ctx.hooks["pre_tool_call"](session_id=SESSION["id"], tool_name=name)
+
+        def finish():
+            return self.ctx.hooks["pre_verify"](session_id=SESSION["id"])
+
+        with patch("hermes.observe", return_value=SESSION), patch.object(api, "request", side_effect=request):
+            self.assertIsNone(tool("terminal"))
+            self.assertEqual(calls, [])
+            with self.assertRaisesRegex(api.APIError, "project_focus_required"):
+                project_work_runtime.require_focus(connection, SESSION)
+            project_work_runtime.focus(connection, SESSION, True)
+            self.assertIsNone(tool("terminal"))
+            self.assertIn("same task", finish()["message"])
+            self.assertIsNone(finish())
+            server["assignment"].update(version=2, checkInDue="2000-01-01T00:00:00Z")
+            self.assertIn("Check in", tool("terminal")["message"])
+            self.assertIsNone(tool("pantheon_project"))
+            server["assignment"].update(state="paused", controlStatus="pending", controlVersion=2)
+            self.assertEqual(tool("terminal")["action"], "block")
+            self.assertFalse(any(path.endswith("/work") for _, path, _ in calls))
+            self.assertIsNone(finish())
+            self.assertIsNone(finish())
+            self.assertEqual(sum(path.endswith("/work") for _, path, _ in calls), 1)
+            with self.assertRaisesRegex(api.APIError, "project_assignment_active"):
+                project_work_runtime.focus(connection, SESSION, False)
+        with patch.object(api, "request", side_effect=api.APIError("outcome_unknown")):
+            self.assertIn("authorization is unavailable", project_work_runtime.gate(SESSION, "terminal"))
+            self.assertIsNone(project_work_runtime.gate({**SESSION, "id": "unrelated"}, "terminal"))
+
+    def test_project_wake_rechecks_before_injection_and_reports_transport_only(self):
+        connection = "a" * 32 + "." + "b" * 32
+        notice = "d" * 32
+        state.put("project", connection, {
+            "connection": connection, "session": SESSION, "left": False,
+            "wake_until": "2099-01-01T00:00:00Z",
+        })
+        calls = []
+        stop = threading.Event()
+
+        def request(handle, session, op, body=None):
+            self.assertEqual(handle, connection)
+            self.assertEqual(session, SESSION)
+            calls.append(op)
+            if op == "wake_wait":
+                self.runtime.active_turns.add((SESSION["profile"], SESSION["id"]))
+                return {"id": notice}
+            self.assertEqual(body, {"id": notice})
+            if op == "wake_try":
+                return {"send": True}
+            stop.set()
+            self.assertEqual(op, "wake_queued")
+            return {"queued": True}
+
+        with patch.object(project_work_runtime, "call", side_effect=request), patch.object(permissions, "current", return_value=True):
+            with patch.object(stop, "wait", side_effect=lambda _: self.runtime.active_turns.clear()) as wait:
+                self.runtime.wait_project_wake(SESSION, connection, stop)
+                wait.assert_called_once_with(3)
+        self.assertEqual(calls, ["wake_wait", "wake_try", "wake_queued"])
+        self.assertEqual(len(self.ctx.injected), 1)
+        self.assertEqual(self.ctx.injected[0][-1], SESSION["route"])
+        self.assertNotIn(notice, self.ctx.injected[0][1])
+        self.assertEqual(state.get("project", connection)["last_notice"], notice)
+
+    def test_project_continuation_deduplicates_and_rechecks(self):
+        connection = "a" * 32 + "." + "b" * 32
+        state.put("project_work", project_work_runtime.key(SESSION), {"connection": connection})
+        status = {
+            "workHooks": True,
+            "project": {"closed": False, "boardPaused": False, "objectiveVersion": 1, "boardRevision": 2},
+            "assignment": {"id": "assignment", "state": "running", "version": 1, "objectiveVersion": 1},
+        }
+        with patch.object(project_work_runtime, "call", return_value=status), patch.object(permissions, "current", return_value=True):
+            for _ in range(2):
+                project_work_runtime.continue_once(self.ctx, SESSION, connection, threading.Event())
+            status["project"]["boardPaused"] = True
+            project_work_runtime.continue_once(self.ctx, SESSION, connection, threading.Event())
+        self.assertEqual(len(self.ctx.injected), 1)
+        self.assertEqual(self.ctx.injected[0][-1], SESSION["route"])
+
     def test_invitation_rejects_untrusted_routes(self):
         secret='A'*43
         self.assertEqual(invitation('https://pantheon.talk/join?invite='+secret),secret)

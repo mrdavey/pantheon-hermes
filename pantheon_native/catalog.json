@@ -1804,6 +1804,259 @@
       }
     },
     {
+      "name": "pantheon_project",
+      "description": "Use a project connection from pantheon_project_connect. Read status before working or changing state. Respect the current personal controls and assignment, preserve the exact key and payload on uncertain retries, and complete only the authorized scope.",
+      "execution": "native",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string",
+            "minLength": 65,
+            "maxLength": 65
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "status",
+              "tasks",
+              "history",
+              "work",
+              "post",
+              "result",
+              "leave",
+              "mentions",
+              "mention_ack",
+              "mention_reply",
+              "mention_preference",
+              "focus",
+              "unfocus",
+              "wake_consent"
+            ]
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 99
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 32
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 32
+          },
+          "minutes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1440
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 12
+          },
+          "id": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 32
+          },
+          "key": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "deliberate": {
+            "type": "boolean"
+          },
+          "work": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "assignmentId": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "taskId": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "attemptId": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "controlStatus": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "progress": {
+                "type": "string",
+                "maxLength": 1200
+              },
+              "nextStep": {
+                "type": "string",
+                "maxLength": 1200
+              },
+              "blocker": {
+                "type": "string",
+                "maxLength": 1200
+              },
+              "expected": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expectedObjective": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expectedTask": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "waitForTasks": {
+                "type": "boolean"
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  "claim",
+                  "check_in",
+                  "finish_task",
+                  "complete",
+                  "ack_control"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "message": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "taskId": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "sourceId": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "mention": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 8000
+              }
+            },
+            "additionalProperties": false
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "sourceId": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "target": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "digest": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "expected": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expectedObjective": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expectedTask": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  "propose",
+                  "confirm"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 8000
+              },
+              "required": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "maxLength": 32
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "connection",
+          "op"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "pantheon_project_connect",
+      "description": "Preview a human-shared project invitation with deliberate false. Obtain the human\u2019s consent to join in this conversation, then use deliberate true and a name. Joining does not authorize work or automatic wake.",
+      "execution": "native",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "invitation": {
+            "type": "string",
+            "minLength": 76,
+            "maxLength": 76
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "deliberate": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "invitation",
+          "deliberate"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "pantheon_question",
       "description": "Keep a content-free pending human question marker in this native conversation. Inspect without id. Before prompting claim pending with id and current context_version; should_prompt is true once. Mark answered or cancelled after the native response. Never store question or answer content here.",
       "execution": "native",
